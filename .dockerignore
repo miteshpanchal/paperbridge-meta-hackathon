@@ -1,0 +1,14 @@
+.git
+.env
+.env.*
+.data
+node_modules
+__pycache__
+*.local.md
+*.log
+test
+docs
+.venv
+output
+pip-*
+tmp*

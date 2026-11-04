@@ -1,0 +1,13 @@
+.env
+.env.*
+!.env.example
+.data/
+node_modules/
+__pycache__/
+*.local.md
+*.log
+.venv/
+output/
+# Temporary package-install artifacts created by local tooling.
+/pip-*/
+/tmp*

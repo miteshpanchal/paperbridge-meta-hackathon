@@ -1,0 +1,5 @@
+PyMuPDF>=1.26.0,<2
+Pillow>=11.3.0,<13
+opencv-python-headless>=4.11.0,<5
+reportlab>=4.4.0,<5
+matplotlib>=3.9.0,<4

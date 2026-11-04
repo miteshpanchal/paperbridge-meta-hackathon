@@ -1,0 +1,16 @@
+services:
+  paperbridge:
+    build: .
+    ports:
+      - "4310:8080"
+    env_file: .env
+    environment:
+      PORT: 8080
+      HOST: 0.0.0.0
+      PYTHON: /opt/media/bin/python
+      DATA_DIR: /data
+    volumes:
+      - papers:/data
+    restart: unless-stopped
+volumes:
+  papers:
