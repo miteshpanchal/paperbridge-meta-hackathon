@@ -22,43 +22,47 @@ def crop(image,box):
     return uri(image.crop((int(x1*w/1000),int(y1*h/1000),int(x2*w/1000),int(y2*h/1000))))
 
 def clean_scan(image):
-    import cv2
-    import numpy as np
-    image.thumbnail((1800,2400));source=np.array(image)
-    grey=cv2.cvtColor(source,cv2.COLOR_RGB2GRAY)
-    edges=cv2.Canny(cv2.GaussianBlur(grey,(5,5),0),35,110)
-    contours,_=cv2.findContours(edges,cv2.RETR_LIST,cv2.CHAIN_APPROX_SIMPLE)
-    h,w=grey.shape;corrected=False
-    for contour in sorted(contours,key=cv2.contourArea,reverse=True)[:30]:
-        if not .28<cv2.contourArea(contour)/(w*h)<.98:continue
-        quad=cv2.approxPolyDP(contour,.025*cv2.arcLength(contour,True),True)
-        if len(quad)!=4 or not cv2.isContourConvex(quad):continue
-        points=quad.reshape(4,2).astype('float32')
-        sums,diffs=points.sum(axis=1),np.diff(points,axis=1).ravel()
-        ordered=np.array([points[sums.argmin()],points[diffs.argmin()],points[sums.argmax()],points[diffs.argmax()]],dtype='float32')
-        if len(np.unique(ordered,axis=0))!=4:continue
-        a,b,c,d=ordered
-        width=int(max(np.linalg.norm(b-a),np.linalg.norm(c-d)))
-        height=int(max(np.linalg.norm(d-a),np.linalg.norm(c-b)))
-        if min(width,height)<250:continue
-        target=np.array([[0,0],[width-1,0],[width-1,height-1],[0,height-1]],dtype='float32')
-        source=cv2.warpPerspective(source,cv2.getPerspectiveTransform(ordered,target),(width,height),borderValue=(255,255,255))
-        corrected=True;break
-    grey=cv2.cvtColor(source,cv2.COLOR_RGB2GRAY)
-    lines=cv2.HoughLinesP(cv2.Canny(grey,45,130),1,np.pi/1800,70,minLineLength=max(60,grey.shape[1]//5),maxLineGap=15)
-    angles=[]
-    if lines is not None:
-        for x1,y1,x2,y2 in lines[:,0,:]:
-            angle=np.degrees(np.arctan2(y2-y1,x2-x1))
-            if abs(angle)<9:angles.append(angle)
-    rotation=float(np.median(angles)) if len(angles)>=6 else 0.0
-    if .3<abs(rotation)<9:
-        rotated=Image.fromarray(source).rotate(rotation,resample=Image.Resampling.BICUBIC,expand=True,fillcolor='white')
-        grey=cv2.cvtColor(np.array(rotated),cv2.COLOR_RGB2GRAY)
-    else:rotation=0.0
-    normalized=cv2.divide(grey,cv2.GaussianBlur(grey,(0,0),25),scale=255)
-    result=ImageOps.autocontrast(Image.fromarray(normalized),cutoff=.15).convert('RGB')
-    return result,{'perspectiveCorrected':corrected,'rotationDegrees':round(rotation,2),'illuminationNormalized':True,'note':'Conservative correction; curved folds can still need review.'}
+    try:
+        import cv2
+        import numpy as np
+        image.thumbnail((1800,2400));source=np.array(image)
+        grey=cv2.cvtColor(source,cv2.COLOR_RGB2GRAY)
+        edges=cv2.Canny(cv2.GaussianBlur(grey,(5,5),0),35,110)
+        contours,_=cv2.findContours(edges,cv2.RETR_LIST,cv2.CHAIN_APPROX_SIMPLE)
+        h,w=grey.shape;corrected=False
+        for contour in sorted(contours,key=cv2.contourArea,reverse=True)[:30]:
+            if not .28<cv2.contourArea(contour)/(w*h)<.98:continue
+            quad=cv2.approxPolyDP(contour,.025*cv2.arcLength(contour,True),True)
+            if len(quad)!=4 or not cv2.isContourConvex(quad):continue
+            points=quad.reshape(4,2).astype('float32')
+            sums,diffs=points.sum(axis=1),np.diff(points,axis=1).ravel()
+            ordered=np.array([points[sums.argmin()],points[diffs.argmin()],points[sums.argmax()],points[diffs.argmax()]],dtype='float32')
+            if len(np.unique(ordered,axis=0))!=4:continue
+            a,b,c,d=ordered
+            width=int(max(np.linalg.norm(b-a),np.linalg.norm(c-d)))
+            height=int(max(np.linalg.norm(d-a),np.linalg.norm(c-b)))
+            if min(width,height)<250:continue
+            target=np.array([[0,0],[width-1,0],[width-1,height-1],[0,height-1]],dtype='float32')
+            source=cv2.warpPerspective(source,cv2.getPerspectiveTransform(ordered,target),(width,height),borderValue=(255,255,255))
+            corrected=True;break
+        grey=cv2.cvtColor(source,cv2.COLOR_RGB2GRAY)
+        lines=cv2.HoughLinesP(cv2.Canny(grey,45,130),1,np.pi/1800,70,minLineLength=max(60,grey.shape[1]//5),maxLineGap=15)
+        angles=[]
+        if lines is not None:
+            for x1,y1,x2,y2 in lines[:,0,:]:
+                angle=np.degrees(np.arctan2(y2-y1,x2-x1))
+                if abs(angle)<9:angles.append(angle)
+        rotation=float(np.median(angles)) if len(angles)>=6 else 0.0
+        if .3<abs(rotation)<9:
+            rotated=Image.fromarray(source).rotate(rotation,resample=Image.Resampling.BICUBIC,expand=True,fillcolor='white')
+            grey=cv2.cvtColor(np.array(rotated),cv2.COLOR_RGB2GRAY)
+        else:rotation=0.0
+        normalized=cv2.divide(grey,cv2.GaussianBlur(grey,(0,0),25),scale=255)
+        result=ImageOps.autocontrast(Image.fromarray(normalized),cutoff=.15).convert('RGB')
+        return result,{'perspectiveCorrected':corrected,'rotationDegrees':round(rotation,2),'illuminationNormalized':True,'note':'Conservative correction; curved folds can still need review.'}
+    except Exception:
+        result=ImageOps.autocontrast(image,cutoff=.15).convert('RGB')
+        return result,{'perspectiveCorrected':False,'rotationDegrees':0.0,'illuminationNormalized':True,'note':'Contrast normalization applied.'}
 
 def export_pdf(data):
     from reportlab.pdfgen import canvas

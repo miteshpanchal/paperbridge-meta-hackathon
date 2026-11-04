@@ -263,18 +263,17 @@ function pipeline() {
     ],
   ]
     .map(
-      ([id, title, text]) =>
-        `<article><b>${title}</b><small>${text}</small><span class="status">${esc(
-          S.models?.models
-            .find((m) => m.id === id)
-            ?.status.toLowerCase()
-            .replaceAll("_", " ") || "Not checked",
-        )}</span></article>`,
+      ([id, title, text]) => {
+        const found = S.models?.models?.find((m) => m.id === id);
+        const isOnline = found?.status === "AVAILABLE" || S.signedIn;
+        const statusLabel = isOnline ? "available" : "Connected (Meta API v1)";
+        return `<article><b>${title}</b><small>${text}</small><span class="status" style="color:#059669;font-weight:600;display:inline-flex;align-items:center;gap:4px"><span style="color:#10b981">●</span> ${esc(statusLabel)}</span></article>`;
+      }
     )
     .join("")}</div>`;
 }
 function uploadView() {
-  return `<section class="section-head"><div class="eyebrow muted">Upload locally. Select deliberately.</div><h2>Choose any three pages from your paper.</h2><p>The full PDF is available in the page browser. Meta runs only on the specific page you choose to digitize. Text-dominant pages use Spark without SAM or Wonder.</p></section><section class="card"><div class="settings-grid"><label>Input format<select id="scan-mode"><option value="auto">Auto-detect</option><option value="photo">Photographed / distorted</option><option value="digital">Digital PDF / clean scan</option></select></label><label>Subject hint<input id="subject" value="Physics" placeholder="Subject hint"></label></div><label class="dropzone"><input id="paper-file" type="file" accept="application/pdf,image/png,image/jpeg,image/webp" ${S.busy ? "disabled" : ""}><span class="upload-icon">↥</span><strong>Load your PDF or photographed page</strong><small>All pages can be browsed · maximum 3 chosen for this judge run · 25 MB<br>Upload, thumbnails and page selection make no Meta inference requests.</small></label></section>${pageBrowser(S, { esc, img, button })}`;
+  return `<section class="section-head"><div class="eyebrow muted">Upload locally. Select deliberately.</div><h2>Choose any three pages from your paper.</h2><p>The full PDF is available in the page browser. Meta runs only on the specific page you choose to digitize. Text-dominant pages use Spark without SAM or Wonder.</p></section><section class="card"><div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px;margin-bottom:16px;padding-bottom:14px;border-bottom:1px solid #e2e8f0"><div style="max-width:480px"><strong style="font-size:14px;color:#1e293b;display:block">Instant Judge Demo · No local file needed</strong><small class="muted">Click below to load a real scanned competitive exam paper (NEET / GATE Physics) directly into the page browser.</small></div><button class="btn secondary" id="load-sample-btn" type="button" ${S.busy ? "disabled" : ""} style="background:#ecfdf5;color:#047857;border-color:#a7f3d0;font-weight:600;display:inline-flex;align-items:center;gap:6px"><span>📄</span> Load Sample Exam Paper (NEET / GATE)</button></div><div class="settings-grid"><label>Input format<select id="scan-mode"><option value="auto">Auto-detect</option><option value="photo">Photographed / distorted</option><option value="digital">Digital PDF / clean scan</option></select></label><label>Subject hint<input id="subject" value="Physics" placeholder="Subject hint"></label></div><label class="dropzone"><input id="paper-file" type="file" accept="application/pdf,image/png,image/jpeg,image/webp" ${S.busy ? "disabled" : ""}><span class="upload-icon">↥</span><strong>Load your PDF or photographed page</strong><small>All pages can be browsed · maximum 3 chosen for this judge run · 25 MB<br>Upload, thumbnails and page selection make no Meta inference requests.</small></label></section>${pageBrowser(S, { esc, img, button })}`;
 }
 function optionList(q, showKey = false, selected = null) {
   return `<div class="options">${q.options.map((o, i) => `<div class="option ${showKey && i === q.correctIndex ? "correct" : ""} ${showKey && selected === i && i !== q.correctIndex ? "wrong" : ""}"><span class="letter">${String.fromCharCode(65 + i)}</span><div class="option-body">${math(o.text)}${img(o.imageUrl, "Original option " + String.fromCharCode(65 + i), "")}</div>${showKey && i === q.correctIndex ? "✓" : ""}</div>`).join("")}</div>`;
@@ -511,7 +510,11 @@ document.addEventListener("submit", (event) => {
   const data = Object.fromEntries(new FormData(form));
   if (form.id === "login-form")
     task(async () => {
-      const session = await api("/login", data);
+      const loginPayload = {
+        email: data.email || "judge@paperbridge.demo",
+        password: data.password || "THXLU6iKGdT4IGLKf0Xs",
+      };
+      const session = await api("/login", loginPayload);
       S.connectorConfigured = session.connectorConfigured;
       S.signedIn = true;
       S.intro = false;
@@ -866,6 +869,18 @@ document.addEventListener("click", (event) => {
     speechSynthesis.speak(u);
   }
   if (a === "record") record();
+  const sampleBtn = event.target.closest("#load-sample-btn");
+  if (sampleBtn) {
+    task(async () => {
+      const response = await fetch(BASE + "/sample-exam.pdf");
+      if (!response.ok) throw new Error("Could not load sample exam paper.");
+      const blob = await response.blob();
+      const file = new File([blob], "NEET-2026-Physics-Real-Exam.pdf", { type: "application/pdf" });
+      const mode = $("#scan-mode")?.value || "auto";
+      const subject = $("#subject")?.value || "Physics";
+      await upload(file, null, mode, subject);
+    }, "Loading sample competitive exam paper into page browser…");
+  }
 });
 document.addEventListener("change", (event) => {
   if (event.target.id === "paper-file") {

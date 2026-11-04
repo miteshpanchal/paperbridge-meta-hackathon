@@ -95,7 +95,10 @@ export async function media(data, config) {
       clearTimeout(timer);
       try {
         const value = JSON.parse(output);
-        if (code || value.error) throw new Error(value.error);
+        if (code || value.error) {
+          reject(fail(422, value.error || "Could not process this PDF/image. Check file format, size, and page limit."));
+          return;
+        }
         resolvePromise(value);
       } catch {
         reject(
