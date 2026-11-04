@@ -14,6 +14,7 @@ class MediaTests(unittest.TestCase):
     def call(self, data):
         result = subprocess.run([sys.executable, HELPER], input=json.dumps(data), text=True, capture_output=True)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertTrue(result.stdout.lstrip().startswith('{'), repr(result.stdout[:500]) + repr(result.stderr[:500]))
         return json.loads(result.stdout)
 
     def test_multi_page_pdf_and_source_crops(self):
@@ -32,6 +33,7 @@ class MediaTests(unittest.TestCase):
     def test_invalid_pdf_does_not_become_a_sample_paper(self):
         result = subprocess.run([sys.executable, HELPER],input=json.dumps({'action':'pdf','base64':'aW52YWxpZA=='}),text=True,capture_output=True)
         self.assertNotEqual(result.returncode, 0)
+        self.assertTrue(result.stdout.lstrip().startswith('{'), repr(result.stdout[:500]) + repr(result.stderr[:500]))
         self.assertIn('error', json.loads(result.stdout))
 
     def test_large_pdf_has_paginated_local_previews_and_selected_render_limit(self):

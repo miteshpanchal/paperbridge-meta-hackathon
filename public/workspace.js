@@ -97,8 +97,14 @@ const views = [
   ["results", "05", "Performance insights"],
   ["coach", "06", "Socratic coach"],
 ];
+function canOpenView(id) {
+  if (id === "upload") return true;
+  if (id === "results") return Boolean(S.report);
+  if (id === "review" || id === "export") return Boolean(S.paper?.pages.length);
+  return Boolean(S.paper?.questions.length);
+}
 function shell(content) {
-  return `<div class="shell"><aside class="sidebar"><a href="/" class="brand"><img src="/assets/icon.svg" alt="">PaperBridge</a><div class="eyebrow muted side-description">Paper to progress</div><nav class="side-nav" aria-label="Workflow">${views.map(([id, n, label]) => `<button data-action="nav" data-view="${id}" class="${S.view === id ? "active" : ""}" ${S.busy || (id !== "upload" && !S.paper) || (id === "results" && !S.report) ? "disabled" : ""}><span class="num">${n}</span>${label}</button>`).join("")}</nav><div class="sidebar-bottom"><div class="sidebar-note"><strong>Source before inference</strong>Compare extracted content with the upload. Ambiguity stays visible. Your edits remain traceable.</div><div class="user"><span class="avatar">PB</span><button class="reset" data-action="logout">Sign out</button></div></div></aside><div class="workspace"><header class="topbar"><button class="reset" data-action="intro">View introduction ↗</button><span>Document workspace / ${esc(views.find((v) => v[0] === S.view)?.[2] || "Upload")}</span><div class="stack"><span class="pill ${S.models?.mode === "LIVE_CONNECTED" ? "good" : "warn"}">${S.models?.mode === "LIVE_CONNECTED" ? "Meta API connected" : S.models?.mode === "UNREACHABLE" ? "Meta API unreachable" : "Live API not configured"}</span><button class="reset" data-action="models">↻</button></div></header><main class="content">${pipeline()}${notices()}${content}<footer class="footer"><span>PaperBridge · Independent Meta AI application</span><span>Original visuals · Editable content · Inspectable reasoning</span></footer></main></div></div>`;
+  return `<div class="shell"><aside class="sidebar"><a href="/" class="brand"><img src="/assets/icon.svg" alt="">PaperBridge</a><div class="eyebrow muted side-description">Paper to progress</div><nav class="side-nav" aria-label="Workflow">${views.map(([id, n, label]) => `<button data-action="nav" data-view="${id}" class="${S.view === id ? "active" : ""}" ${S.busy || !canOpenView(id) ? "disabled" : ""}><span class="num">${n}</span>${label}</button>`).join("")}</nav><div class="sidebar-bottom"><div class="sidebar-note"><strong>Source before inference</strong>Compare extracted content with the upload. Ambiguity stays visible. Your edits remain traceable.</div><div class="user"><span class="avatar">PB</span><button class="reset" data-action="logout">Sign out</button></div></div></aside><div class="workspace"><header class="topbar"><button class="reset" data-action="intro">View introduction ↗</button><span>Document workspace / ${esc(views.find((v) => v[0] === S.view)?.[2] || "Upload")}</span><div class="stack"><span class="pill ${S.models?.mode === "LIVE_CONNECTED" ? "good" : "warn"}">${S.models?.mode === "LIVE_CONNECTED" ? "Meta API connected" : S.models?.mode === "UNREACHABLE" ? "Meta API unreachable" : "Live API not configured"}</span><button class="reset" data-action="models">↻</button></div></header><main class="content">${pipeline()}${notices()}${content}<footer class="footer"><span>PaperBridge · Independent Meta AI application</span><span>Original visuals · Editable content · Inspectable reasoning</span></footer></main></div></div>`;
 }
 function pipeline() {
   return `<div class="pipeline">${[
@@ -761,7 +767,7 @@ async function init() {
     if (id) {
       try {
         S.paper = await api("/papers/" + id);
-        S.view = "review";
+        S.view = S.paper.pages.length ? "review" : "upload";
         if (S.paper.analysisAnswers) {
           S.responses = S.paper.analysisAnswers;
           S.report = await api(`/papers/${id}/analysis`);
