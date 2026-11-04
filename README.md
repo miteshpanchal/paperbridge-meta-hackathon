@@ -32,14 +32,24 @@ npm run setup
 docker compose up --build
 ```
 
+## Two focused workspaces
+
+- **Organizations** at `/organization`: digitize, review, select a verified subset, host a test, export, or publish through a real destination API.
+- **Students** at `/student`: upload a paper already attempted, confirm responses, save the original analysis, ask a doubt, and take a separate retry.
+- **Judges** at `/judge`: one login with a guided path through both journeys. Each workspace has its own paper library.
+
+See [JOURNEYS.md](docs/JOURNEYS.md) for data ownership, immutable attempts, hosted-test behavior and processing guarantees.
+
 ## The real-document workflow
 
-1. **Load the PDF locally.** Every page is available through a paginated thumbnail browser, including long PDFs. Select or deselect any pages, up to **three** for the judge run. Loading thumbnails, navigating and selecting use no Meta inference.
+1. **Load the PDF locally.** Every page is available through a paginated thumbnail browser, including long PDFs. Select or deselect any pages, up to **three** for the judge run. PDF previews render in the browser. Loading thumbnails, navigating and selecting use no Meta inference.
 2. **Correct the source.** Photographed pages can receive conservative perspective, rotation and illumination corrections. The original remains beside the processed page. Curved folds and lost pixels are not magically reconstructed.
 3. **Process one chosen page.** Text-dominant pages use one Standard-mode Muse Spark request, skipping SAM and Wonder. Visual pages offer a two-request economy path (SAM + Spark) or a four-request focused path with layout coverage and one recovery attempt. Graphical choices and diagrams are cropped from the upload rather than redrawn. Request caps are enforced on the server; token costs still depend on content.
 4. **Verify only what you choose.** Muse Wonder runs on one explicitly selected question, capped at two requests. A high-confidence key disagreement can trigger one bounded repair, accepted only after a second agreeing audit. Other questions remain marked “not requested.” Supplied keys are never autonomously overwritten.
 5. **Review and edit.** Correct text, LaTeX, option text, question numbers and crop coordinates. Edits invalidate old audits. Each question remains linked to its source page and full question crop.
 6. **Export.** Download a cleaned source PDF, a typeset question paper PDF, or editable structured JSON. PDF exports contain current uploaded/edited content, without printing the answer key. Unsupported formula rendering is reported; where available, the original question crop preserves the source instead of inventing a formula.
+
+You can host an independently verified subset while leaving incomplete questions in the source review. Hosting creates a stable test share link with server-side grading.
 
 Instruction/blank pages can be retained without inventing questions. Unreadable question pages return a visible error. A missed question can be selected directly on its source image and recovered with one Spark request. Current limits are 25 MB, three processed pages per judge paper and 200 single-correct MCQs. The PDF page browser has no fixed 100-page restriction and renders thumbnails in local batches of 24. Numerical and multiple-correct formats are explicitly outside this release.
 
@@ -73,7 +83,7 @@ flowchart LR
   Voice --> Coach[Socratic coaching]
 ```
 
-The server contains no private ClarifyCue source package, Prisma client, database schema or core database credential. A narrow optional external-publication connector remains documented in [API_CONTRACT.md](docs/API_CONTRACT.md); the judge interface focuses on digitization and student analysis. ClarifyCue is not required to run it.
+The server contains no private ClarifyCue source package, Prisma client, database schema or core database credential. A narrow optional external-publication connector is documented in [API_CONTRACT.md](docs/API_CONTRACT.md) and is available in the organization workspace. ClarifyCue is not required to run it.
 
 Model protocols follow Meta's official [model reference](https://dev.meta.ai/docs/models), [SAM output grammar](https://dev.meta.ai/docs/sam/reading-segmentation), and [recording transcription protocol](https://dev.meta.ai/docs/speech-to-text). Catalogue connectivity and per-question verification are distinct signals.
 

@@ -136,14 +136,26 @@ test("uploaded content → edits → re-audit → responses/OMR → isolated ser
   ).value;
   assert.equal(paper.questions.length, 3);
   assert.equal(paper.questions[0].sourcePage, 7);
+  const operation={action:"audit",input:{questionId:paper.questions[0].id},requestId:"test-queued-audit"};
+  const queued=await request(path+"/jobs",operation);
+  assert.equal(queued.response.status,202);
+  let job;
+  const jobDeadline=Date.now()+5000;
+  do { job=(await request("/jobs/"+queued.value.id)).value; if(!["QUEUED","RUNNING"].includes(job.status))break;assert.ok(Date.now()<jobDeadline,"Queued audit did not complete");await new Promise(r=>setTimeout(r,10)); } while(true);
+  assert.equal(job.status,"SUCCEEDED",JSON.stringify(job.error));
+  assert.equal((await request(path+"/jobs",operation)).value.id,job.id,"A repeated operation resumes the same job");
+  assert.equal((await request(path)).value.activeJob,undefined);
   assert.equal(
-    (await request(path + "/analyze", { answers: [0, 0, null] })).value.score,
-    3,
+    (await request(path + "/analyze", { answers: [0, 0, null] })).response
+      .status,
+    403,
+    "Organization papers are not student attempts",
   );
   assert.equal(
-    (await request(path + "/analysis")).value.score,
-    3,
-    "confirmed original responses survive reload",
+    (await request(path, undefined, { "X-PaperBridge-Journey": "student" }))
+      .response.status,
+    404,
+    "Workspace scopes cannot be mixed",
   );
   const edited = (
     await request(path + "/edit", {
@@ -162,13 +174,94 @@ test("uploaded content → edits → re-audit → responses/OMR → isolated ser
     await request(path + "/audit", { questionId: q.id });
   paper = (await request(path)).value;
   assert.equal(paper.questions[0].text, "Edited uploaded content");
+  const hosted = (await request(path + "/host", {})).value;
+  const copy = (await request(path + "/share-student", {})).value;
+  assert.equal(copy.journey, "student");
+  assert.notEqual(copy.id, paper.id);
+  assert.equal(copy.hostToken, undefined);
+  assert.ok(
+    copy.questions.every((q) => q.studentResponse.selectedIndex === null),
+  );
+  const studentPath = "/papers/" + copy.id;
+  assert.equal(
+    (await request(studentPath + "/host", {})).response.status,
+    403,
+    "Student uploads cannot publish organization tests",
+  );
+  assert.equal(
+    (
+      await request(studentPath + "/analyze", {
+        answers: [0, 0, null],
+        confirmed: true,
+        responseStates: ["SELECTED", "SELECTED", "UNRESOLVED"],
+      })
+    ).response.status,
+    422,
+  );
+  const original = (
+    await request(studentPath + "/analyze", {
+      answers: [0, 0, null],
+      confirmed: true,
+      responseStates: ["SELECTED", "SELECTED", "SKIPPED"],
+    })
+  ).value;
+  assert.equal(original.score, 3);
+  assert.equal((await request(studentPath + "/analysis")).value.score, 3);
+  assert.equal(
+    (
+      await request(studentPath + "/analyze", {
+        answers: [1, 1, null],
+        confirmed: true,
+        responseStates: ["SELECTED", "SELECTED", "SKIPPED"],
+      })
+    ).response.status,
+    409,
+    "An original attempt cannot be replaced by new answers",
+  );
+  const retry = (await request(studentPath + "/retry", {})).value;
+  const retryVisible = (await request("/retries/" + retry.token)).value;
+  assert.ok(!JSON.stringify(retryVisible).includes("correctIndex"));
+  await request("/retries/" + retry.token + "/start", {});
+  assert.equal(
+    (
+      await request("/retries/" + retry.token + "/submit", {
+        answers: [0, 1, 0],
+      })
+    ).value.score,
+    12,
+  );
+  assert.equal(
+    (
+      await request("/retries/" + retry.token + "/submit", {
+        answers: [1, 0, 1],
+      })
+    ).value.score,
+    12,
+    "A retry submission is immutable",
+  );
+  assert.equal(
+    (await request(studentPath + "/analysis")).value.score,
+    3,
+    "A retry preserves the original exam result",
+  );
   const detected = (
-    await request(path + "/responses", { image: "data:image/png;base64,AA==" })
+    await request(studentPath + "/responses", {
+      image: "data:image/png;base64,AA==",
+    })
   ).value;
   assert.equal(detected.responseDetections.length, 2);
   assert.equal(detected.responseDetections[0].selectedIndex, 1);
   assert.equal(detected.responseDetections[1].selectedIndex, null);
-  const hosted = (await request(path + "/host", {})).value;
+  const orgList = (await request("/papers?journey=organization")).value.papers;
+  const studentList = (await request("/papers?journey=student")).value.papers;
+  assert.deepEqual(
+    orgList.map((p) => p.id),
+    [paper.id],
+  );
+  assert.deepEqual(
+    studentList.map((p) => p.id),
+    [copy.id],
+  );
   const visible = (
     await request("/hosted/" + hosted.hostToken, undefined, { Cookie: "" })
   ).value;

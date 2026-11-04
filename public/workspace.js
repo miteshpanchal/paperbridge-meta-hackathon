@@ -1,11 +1,35 @@
 import { introduction } from "./introduction.js";
 import { pageBrowser } from "./page-browser.js";
+import {
+  journeys,
+  workspaceHome,
+  hostView,
+  integrationView,
+  retryView,
+  judgeView,
+} from "./journeys.js";
+import { mountAssessment } from "./assessment.js";
+import { processingClient } from "./processing.js";
+import {
+  openPdf,
+  inspectPdf,
+  renderPdfPage,
+  imagePreview,
+} from "./pdf-browser.js";
 const BASE = document.querySelector('meta[name="app-base"]')?.content || "";
 const { default: katex } = await import(BASE + "/vendor/katex/katex.mjs");
 const $ = (selector) => document.querySelector(selector);
 const S = {
   signedIn: false,
-  view: "upload",
+  view: "home",
+  journey:
+    ["organization", "student"].find((v) =>
+      location.pathname.endsWith("/" + v),
+    ) ||
+    sessionStorage.getItem("pb-journey") ||
+    "organization",
+  intro: location.pathname === "/",
+  library: [],
   paper: null,
   report: null,
   models: null,
@@ -54,7 +78,10 @@ const badge = (status) =>
 async function api(path, data) {
   const response = await fetch(BASE + "/api" + path, {
     method: data === undefined ? "GET" : "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: {
+      "Content-Type": "application/json",
+      "X-PaperBridge-Journey": S.journey,
+    },
     credentials: "same-origin",
     body: data === undefined ? undefined : JSON.stringify(data),
   });
@@ -65,6 +92,8 @@ async function api(path, data) {
   }
   return value;
 }
+const processing = processingClient({ api, state: S, render });
+const infer = (path, input) => processing.run(path, input);
 async function task(fn, progress) {
   if (S.busy) return;
   S.busy = true;
@@ -74,12 +103,18 @@ async function task(fn, progress) {
   render();
   try {
     await fn();
-    if (S.paper) sessionStorage.setItem("pb-live-paper", S.paper.id);
+    if (S.paper)
+      sessionStorage.setItem("pb-" + S.journey + "-paper", S.paper.id);
   } catch (e) {
     S.error = e.message;
   } finally {
     S.busy = false;
     S.progress = "";
+    if (S.signedIn) {
+      try {
+        S.allowance = await api("/allowance");
+      } catch {}
+    }
     render();
   }
 }
@@ -89,22 +124,124 @@ function notices() {
 function login() {
   return introduction(S, { esc, img, button, pipeline });
 }
-const views = [
-  ["upload", "01", "Upload a paper"],
-  ["review", "02", "Review & edit"],
-  ["export", "03", "Export clean paper"],
-  ["responses", "04", "Student responses"],
-  ["results", "05", "Performance insights"],
-  ["coach", "06", "Socratic coach"],
+const helpers = { esc, img, button, math };
+const roleCache = {};
+const roleKeys = [
+  "paper",
+  "report",
+  "view",
+  "queue",
+  "selection",
+  "document",
+  "queueIndex",
+  "cursor",
+  "pageIndex",
+  "responses",
+  "responseEvidence",
+  "chat",
+  "coachIndex",
+  "doubt",
+  "library",
 ];
+const cleanRole = () => ({
+  paper: null,
+  report: null,
+  view: "home",
+  queue: [],
+  selection: [],
+  document: null,
+  queueIndex: 0,
+  cursor: 0,
+  pageIndex: 0,
+  responses: [],
+  responseEvidence: {},
+  chat: [],
+  coachIndex: 0,
+  doubt: "",
+  library: [],
+});
+async function loadLibrary() {
+  S.library = (await api("/papers?journey=" + S.journey)).papers;
+}
+async function resumeProcessing() {
+  const resumed = await processing.resume();
+  if (!resumed) return;
+  if (resumed.result?.questions) {
+    S.paper = resumed.result;
+    S.view = "review";
+  }
+  if (resumed.job.action === "voice") {
+    S.doubt = resumed.result.transcript;
+    S.view = "coach";
+  }
+  if (resumed.job.questionId)
+    S.coachIndex = Math.max(
+      0,
+      S.paper.questions.findIndex((q) => q.id === resumed.job.questionId),
+    );
+  if (resumed.job.action === "coach") {
+    S.chat = [{ role: "coach", text: resumed.result.hint }];
+    S.view = "coach";
+  }
+  S.message =
+    "Resumed the saved processing job without starting a new inference.";
+}
+async function openPaper(id, resume = true) {
+  S.paper = await api("/papers/" + id);
+  S.report = null;
+  S.responses = [];
+  S.document = null;
+  S.queue = [];
+  S.selection = [];
+  S.view = S.paper.pages.length ? "review" : "upload";
+  if (S.paper.activeJob)
+    sessionStorage.setItem(
+      "pb-" + S.journey + "-pending-job",
+      S.paper.activeJob.id,
+    );
+  if (S.paper.originalAttempt) {
+    S.report = await api(`/papers/${id}/analysis`);
+    S.responses = S.report.review.map((q) => q.answer);
+    S.view = "results";
+  }
+  if (resume && S.paper.activeJob) await resumeProcessing();
+}
+async function enterJourney(role, view = "home") {
+  if (!journeys[role]) throw new Error("Choose a workspace.");
+  if (S.journey !== role) {
+    roleCache[S.journey] = Object.fromEntries(roleKeys.map((k) => [k, S[k]]));
+    Object.assign(S, cleanRole(), roleCache[role] || {});
+  }
+  S.journey = role;
+  S.view = view;
+  S.intro = false;
+  S.error = "";
+  S.message = "";
+  sessionStorage.setItem("pb-journey", role);
+  history.pushState({}, "", BASE + "/" + role);
+  if (S.signedIn) await loadLibrary();
+  render();
+  window.scrollTo({ top: 0 });
+}
 function canOpenView(id) {
-  if (id === "upload") return true;
+  if (["home", "upload", "judge"].includes(id)) return true;
   if (id === "results") return Boolean(S.report);
-  if (id === "review" || id === "export") return Boolean(S.paper?.pages.length);
+  if (["review", "export"].includes(id)) return Boolean(S.paper?.pages.length);
   return Boolean(S.paper?.questions.length);
 }
 function shell(content) {
-  return `<div class="shell"><aside class="sidebar"><a href="/" class="brand"><img src="/assets/icon.svg" alt="">PaperBridge</a><div class="eyebrow muted side-description">Paper to progress</div><nav class="side-nav" aria-label="Workflow">${views.map(([id, n, label]) => `<button data-action="nav" data-view="${id}" class="${S.view === id ? "active" : ""}" ${S.busy || !canOpenView(id) ? "disabled" : ""}><span class="num">${n}</span>${label}</button>`).join("")}</nav><div class="sidebar-bottom"><div class="sidebar-note"><strong>Source before inference</strong>Compare extracted content with the upload. Ambiguity stays visible. Your edits remain traceable.</div><div class="user"><span class="avatar">PB</span><button class="reset" data-action="logout">Sign out</button></div></div></aside><div class="workspace"><header class="topbar"><button class="reset" data-action="intro">View introduction ↗</button><span>Document workspace / ${esc(views.find((v) => v[0] === S.view)?.[2] || "Upload")}</span><div class="stack"><span class="pill ${S.models?.mode === "LIVE_CONNECTED" ? "good" : "warn"}">${S.models?.mode === "LIVE_CONNECTED" ? "Meta API connected" : S.models?.mode === "UNREACHABLE" ? "Meta API unreachable" : "Live API not configured"}</span><button class="reset" data-action="models">↻</button></div></header><main class="content">${pipeline()}${notices()}${content}<footer class="footer"><span>PaperBridge · Independent Meta AI application</span><span>Original visuals · Editable content · Inspectable reasoning</span></footer></main></div></div>`;
+  const j = journeys[S.journey],
+    views = j.views;
+  return `<div class="shell"><aside class="sidebar"><a href="/" class="brand"><img src="/assets/icon.svg" alt="">PaperBridge</a><div class="eyebrow muted side-description">${j.label} workspace</div><nav class="side-nav" aria-label="${j.label} workflow">${views.map(([id, n, label]) => `<button data-action="nav" data-view="${id}" class="${S.view === id ? "active" : ""}" ${S.busy || !canOpenView(id) ? "disabled" : ""}><span class="num">${n}</span>${label}</button>`).join("")}</nav><div class="sidebar-bottom"><div class="sidebar-note"><strong>${S.journey === "student" ? "Your original attempt stays yours" : "From source to a reviewed test"}</strong>${S.journey === "student" ? "Confirm actual responses. A retry records a separate attempt." : "Preserve source visuals, check the key and host a stable paper version."}</div></div></aside><div class="workspace"><header class="topbar"><button class="reset" data-action="intro">Introduction ↗</button><div class="journey-switch" aria-label="Switch workspace">${Object.entries(
+    journeys,
+  )
+    .map(
+      ([id, v]) =>
+        `<button data-action="choose-journey" data-journey="${id}" aria-pressed="${S.journey === id}" ${S.busy ? "disabled" : ""}>${v.label}</button>`,
+    )
+    .join(
+      "",
+    )}</div><div class="stack"><button class="reset" data-action="judge" ${S.busy ? "disabled" : ""}>Judge guide</button><button class="reset" data-action="logout" ${S.busy ? "disabled" : ""}>Sign out</button></div></header><main class="content">${pipeline()}${S.allowance ? `<details class="allowance"><summary>Judge allowance: $${S.allowance.totalRemainingUsd.toFixed(2)} total / $${S.allowance.remainingUsd.toFixed(2)} today · ${S.allowance.requests}/${S.allowance.requestLimit} inference requests</summary><p class="small muted">Reserved or accounted conservatively from bounded input/output. Token preflight checks do not generate answers. Saved evidence, browsing and exports use no Meta inference.</p></details>` : ""}${notices()}${S.paper?.evidenceOrigin ? `<div class="notice">Saved real-paper example · responses entered here describe practice with this example.</div>` : ""}${content}<footer class="footer"><span>PaperBridge · ${j.label} workspace</span><span>Source visuals · Traceable checks · Your own paper</span></footer></main></div></div>`;
 }
 function pipeline() {
   return `<div class="pipeline">${[
@@ -149,20 +286,20 @@ function sourcePanel() {
   return `<section class="card" style="margin-bottom:22px"><div class="spread"><h3>Original → cleaned source</h3><label>Source page<select id="source-page">${S.paper.pages.map((p, i) => `<option value="${i}" ${i === S.pageIndex ? "selected" : ""}>${esc(p.filename || "Upload")} · page ${p.sourcePage}</option>`).join("")}</select></label></div><div class="grid2 source-comparison"><div><p class="eyebrow muted">Original upload</p>${img(p.rawImage || p.image, "Original uploaded page", "source-document")}</div><div><p class="eyebrow muted">Processed page + SAM regions</p><div class="source-preview" id="region-source">${img(p.image, "Cleaned page", "source-document")}${p.boxes.map((b) => `<div class="bounding-box" style="left:${b.box[0] / 10}%;top:${b.box[1] / 10}%;width:${(b.box[2] - b.box[0]) / 10}%;height:${(b.box[3] - b.box[1]) / 10}%"><span>${esc(b.label)}</span></div>`).join("")}</div></div></div><p class="small muted">${p.processing?.perspectiveCorrected ? "Perspective corrected. " : ""}${p.processing?.rotationDegrees ? `Rotation corrected by ${p.processing.rotationDegrees}°. ` : ""}${p.processing?.illuminationNormalized ? "Uneven illumination normalized." : "Native page preserved."} Coordinates and crops refer to the processed page. ${p.questionCount} questions extracted. Model requests: ${p.modelUsage?.used ?? "prior run"} / ${p.modelUsage?.max ?? "not recorded"}.</p><p class="small muted">${p.coverage?.missingNumbers?.length ? "Unresolved source question numbers: " + esc(p.coverage.missingNumbers.join(", ")) : ""}</p>${button("recover", "Check one missing visual block · up to 2 requests", true)}<p class="small muted">Publishing this source page as the introduction makes its before/after preview visible to judges.</p>${button("use-showcase", "Use this page in the introduction", true)}<details class="key-entry"><summary>Recover a folded or missed question with one Spark request</summary><p class="small muted">Select a rectangle on the processed page around one complete question and every option. This avoids reprocessing the page. No Wonder audit runs unless you request it separately.</p>${button("select-region", "Select source region", true)}<form id="region-form" class="fields" style="margin-top:15px"><label>Source region (left, top, right, bottom)<input id="manual-region-box" name="box" value="${S.regionBox ? S.regionBox.join(", ") : ""}" required></label><label>Printed question number, if readable<input name="sourceNumber" maxlength="4"></label><button class="btn" ${S.busy ? "disabled" : ""}>Extract this region · maximum 1 Spark request</button></form></details></section>`;
 }
 function editor(q, index) {
-  return `<details class="question-editor"><summary>Edit this question and its source crops</summary><form class="edit-form fields" data-id="${q.id}"><div class="grid2"><div>${img(q.sourceSnippet, "Complete original question crop", "source-question")}<p class="small muted">Source page ${q.sourcePage || q.page}. Crop coordinates use left, top, right, bottom on a 0–1000 page scale. Blank a diagram crop to remove it; source pixels stay preserved.</p></div><div class="fields"><label>Printed question number<input name="sourceNumber" value="${esc(q.sourceNumber || "")}" maxlength="4"></label><label>Question text / LaTeX<textarea name="text" rows="6" required>${esc(q.text)}</textarea></label><label>Topic<input name="topic" value="${esc(q.topic)}"></label><label>Whole question crop<input name="sourceBox" value="${boxText(q.sourceBox)}" placeholder="left, top, right, bottom"></label><label>Question diagram crop<input name="diagramBox" value="${boxText(q.diagramBox)}" placeholder="left, top, right, bottom"></label></div></div>${q.options.map((o, i) => `<div class="grid2"><label>Option ${String.fromCharCode(65 + i)} text<textarea name="option-${i}" rows="2">${esc(o.text)}</textarea></label><label>Option ${String.fromCharCode(65 + i)} image crop<input name="box-${i}" value="${boxText(o.imageBox)}" placeholder="Blank for text-only option"></label></div>`).join("")}<label>Answer key<select name="correctIndex"><option value="">Unknown / not yet verified</option>${q.options.map((_, i) => `<option value="${i}" ${q.correctIndex === i ? "selected" : ""}>${String.fromCharCode(65 + i)}</option>`).join("")}</select></label><label>Explanation / LaTeX<textarea name="explanation" rows="4">${esc(q.explanation)}</textarea></label><button class="btn" ${S.busy || S.paper.hosted || S.paper.publication ? "disabled" : ""}>Save changes & invalidate old audit</button></form></details>`;
+  return `<details class="question-editor"><summary>Edit this question and its source crops</summary><form class="edit-form fields" data-id="${q.id}"><div class="grid2"><div>${img(q.sourceSnippet, "Complete original question crop", "source-question")}<p class="small muted">Source page ${q.sourcePage || q.page}. Crop coordinates use left, top, right, bottom on a 0–1000 page scale. Blank a diagram crop to remove it; source pixels stay preserved.</p></div><div class="fields"><label>Printed question number<input name="sourceNumber" value="${esc(q.sourceNumber || "")}" maxlength="4"></label><label>Question text / LaTeX<textarea name="text" rows="6" required>${esc(q.text)}</textarea></label><label>Topic<input name="topic" value="${esc(q.topic)}"></label><label>Whole question crop<input name="sourceBox" value="${boxText(q.sourceBox)}" placeholder="left, top, right, bottom"></label><label>Question diagram crop<input name="diagramBox" value="${boxText(q.diagramBox)}" placeholder="left, top, right, bottom"></label></div></div>${q.options.map((o, i) => `<div class="grid2"><label>Option ${String.fromCharCode(65 + i)} text<textarea name="option-${i}" rows="2">${esc(o.text)}</textarea></label><label>Option ${String.fromCharCode(65 + i)} image crop<input name="box-${i}" value="${boxText(o.imageBox)}" placeholder="Blank for text-only option"></label></div>`).join("")}<label>Answer key<select name="correctIndex"><option value="">Unknown / not yet verified</option>${q.options.map((_, i) => `<option value="${i}" ${q.correctIndex === i ? "selected" : ""}>${String.fromCharCode(65 + i)}</option>`).join("")}</select></label><label>Explanation / LaTeX<textarea name="explanation" rows="4">${esc(q.explanation)}</textarea></label><button class="btn" ${S.busy || S.paper.hosted || S.paper.publication || S.paper.originalAttempt ? "disabled" : ""}>Save changes & invalidate old audit</button></form></details>`;
 }
 function reviewView() {
   return `<section class="section-head"><div class="eyebrow muted">02 / Source-grounded digitization</div><h2>${esc(S.paper.name)}</h2><p>${S.paper.questions.length} questions from ${S.paper.pages.length} selected pages. Compare the original, inspect the cropped visuals, and edit text or crop boundaries. Saving an edit requires a fresh audit before hosting.</p></section>${sourcePanel()}${S.paper.questions.length ? "" : '<div class="notice info">No questions were found on these completed pages. Instruction/blank pages are retained; choose a question-bearing page to continue.</div>'}${S.paper.questions.map((q, i) => `<article class="card question-card"><div class="question-head"><span class="eyebrow muted">Q${esc(q.sourceNumber || i + 1)} · ${esc(q.topic)}</span>${badge(q.audit.status)}</div><p class="question-text">${math(q.text)}</p>${img(q.imageUrl, "Original diagram crop")}${optionList(q, true)}${q.repair ? `<div class="notice small">Autonomous key repair ${q.repair.confirmed ? "confirmed" : "not confirmed"}: ${q.repair.originalIndex === null ? "unknown" : String.fromCharCode(65 + q.repair.originalIndex)} → ${String.fromCharCode(65 + q.repair.proposedIndex)}. Both audits remain available below.</div>` : ""}<details class="audit"><summary>Audit, explanation & detected response</summary><p>${math(q.audit.proof)}</p><p>${math(q.explanation)}</p><p><strong>Visible student mark:</strong> ${q.studentResponse?.selectedIndex === null ? "No unambiguous option detected" : String.fromCharCode(65 + q.studentResponse.selectedIndex)}. ${esc(q.studentResponse?.evidence || "")}</p>${q.repair ? `<p>${math(q.repair.initialProof)}</p><p>${math(q.repair.confirmationProof)}</p>` : ""}</details>${button("audit", "Verify this question · up to 2 requests", true, `data-id="${q.id}" ${q.audit.status === "VERIFIED" ? "disabled" : ""}`)}${editor(q, i)}</article>`).join("")}<div class="action-bar"><div><strong class="small">Every field remains editable</strong><br><small>Inferred keys are estimates until checked against an authoritative key.</small></div><div class="stack"><span class="small muted">Verify questions individually to control API usage.</span>${S.cursor < S.queue.length ? button("nav", "Choose next selected page", true, 'data-view="upload"') : ""}${button("nav", "Export this paper →", false, 'data-view="export"')}</div></div>`;
 }
 function exportView() {
-  return `<section class="section-head"><div class="eyebrow muted">03 / From image to usable paper</div><h2>A clean copy. Editable content.</h2><p>Export only what came from your selected uploaded pages. The cleaned scan preserves their layout; the typeset paper uses the current edited questions and original visual crops.</p></section><div class="grid2"><section class="card"><h3>Cleaned source PDF</h3><p class="small muted">Perspective and illumination corrections on photographed pages. Original question layout and diagrams remain visible.</p>${button("export-clean", "Download cleaned scan PDF ↧")}</section><section class="card"><h3>Digitized question paper PDF</h3><p class="small muted">Selectable question text, rendered formulas and original diagram crops. Questions use your latest edits. No answer key is printed.</p>${button("export-typeset", "Download digitized paper PDF ↧")}</section><section class="card"><h3>Editable question data</h3><p class="small muted">Download structured JSON containing text, choices, source crops, crop coordinates and audit provenance. The in-app editor remains the fastest way to make corrections.</p>${button("export-json", "Download editable JSON ↧", true)}</section><section class="card"><h3>Use the paper as a student</h3><p class="small muted">Review visible ticks, enter what you marked, or upload an OMR. A paper alone cannot tell us your score without your responses.</p>${button("nav", "Analyze my original attempt →", true, 'data-view="responses"')}</section></div>`;
+  return `<section class="section-head"><div class="eyebrow muted">03 / From image to usable paper</div><h2>A clean copy. Editable content.</h2><p>Export only what came from your selected uploaded pages. The cleaned scan preserves their layout; the typeset paper uses the current edited questions and original visual crops.</p></section><div class="grid2"><section class="card"><h3>Cleaned source PDF</h3><p class="small muted">Perspective and illumination corrections on photographed pages. Original question layout and diagrams remain visible.</p>${button("export-clean", "Download cleaned scan PDF ↧")}</section><section class="card"><h3>Digitized question paper PDF</h3><p class="small muted">Selectable question text, rendered formulas and original diagram crops. Questions use your latest edits. No answer key is printed.</p>${button("export-typeset", "Download digitized paper PDF ↧")}</section><section class="card"><h3>Editable question data</h3><p class="small muted">Download structured JSON containing text, choices, source crops, crop coordinates and audit provenance. The in-app editor remains the fastest way to make corrections.</p>${button("export-json", "Download editable JSON ↧", true)}</section>${S.journey === "organization" ? `<section class="card"><h3>Host a reviewed test</h3><p class="small muted">Create a stable assessment and share it with students once the questions are ready.</p>${button("nav", "Prepare hosted test →", true, 'data-view="host"')}</section>` : ""}</div>`;
 }
 function responsesView() {
-  return `<section class="section-head"><div class="eyebrow muted">04 / Your actual attempt</div><h2>What did you mark?</h2><p>Review marks found on the uploaded paper, upload your OMR, or enter your responses. Detected marks are proposals: confirm or correct them before scoring. Uncertain or multiple marks remain blank.</p></section><div class="grid2"><section class="card"><h3>Marks on the paper</h3><p class="small muted">${S.paper.questions.filter((q) => q.studentResponse?.selectedIndex !== null && q.studentResponse?.confidence >= 0.9).length} high-confidence marks detected. Printed option labels and AI-derived answers are not treated as student responses.</p>${button("use-marks", "Review detected paper marks", true)}</section><section class="card"><h3>Read an OMR / response sheet</h3><label class="dropzone" style="min-height:130px"><input id="omr-file" type="file" accept="application/pdf,image/png,image/jpeg,image/webp" ${S.busy ? "disabled" : ""}><strong>Upload your marked OMR or answer sheet</strong><small>First PDF page or one image · Matched by printed question number</small></label>${S.paper.responseDetections ? `<p class="small muted">${S.paper.responseDetections.length} matching rows read. Uncertain rows need manual review.</p>${button("use-omr", "Review detected OMR marks", true)}` : ""}</section></div><section class="card" style="margin-top:22px"><form id="responses-form"><div class="answer-grid">${S.paper.questions.map((q, i) => `<label class="answer-row"><span class="eyebrow">Q${esc(q.sourceNumber || i + 1)}</span><div><p>${esc(q.text)}</p><small>${esc(S.responseEvidence?.[q.id] || q.studentResponse?.evidence || "Enter your own response.")}</small></div><select name="answer-${i}" aria-label="Your answer to question ${esc(q.sourceNumber || i + 1)}"><option value="">Skipped / unknown</option>${q.options.map((_, j) => `<option value="${j}" ${S.responses[i] === j ? "selected" : ""}>${String.fromCharCode(65 + j)}</option>`).join("")}</select></label>`).join("")}</div><button class="btn" ${S.busy ? "disabled" : ""}>Confirm these responses & analyze →</button></form><details class="key-entry"><summary>Use an official or coaching answer key</summary><p class="small muted">Enter one letter per extracted question, in the displayed order. The key's provenance is supplied by you, not certified by PaperBridge.</p><form id="key-form" class="stack"><input name="key" placeholder="Answer letters in displayed order" required><button class="btn secondary" ${S.busy || S.paper.hosted ? "disabled" : ""}>Apply my key</button></form></details><form id="marking-form" class="stack" style="margin-top:20px"><label>Marks / correct<input name="marks" type="number" value="${S.paper.marks}" min="1" max="4" required></label><label>Penalty / wrong<select name="penalty">${[0, 0.25, 0.5, 1].map((v) => `<option ${v === S.paper.penalty ? "selected" : ""}>${v}</option>`).join("")}</select></label><button class="btn secondary" ${S.busy || S.paper.hosted ? "disabled" : ""}>Save marking scheme</button></form></section>`;
+  return `<section class="section-head"><div class="eyebrow muted">04 / Your actual attempt</div><h2>What did you mark?</h2><p>Review marks found on the uploaded paper, upload your OMR, or enter your responses. Detected marks are proposals: confirm or correct them before scoring. Uncertain or multiple marks remain blank.</p></section><div class="grid2"><section class="card"><h3>Marks on the paper</h3><p class="small muted">${S.paper.questions.filter((q) => q.studentResponse?.selectedIndex !== null && q.studentResponse?.confidence >= 0.9).length} high-confidence marks detected. Printed option labels and AI-derived answers are not treated as student responses.</p>${button("use-marks", "Review detected paper marks", true)}</section><section class="card"><h3>Read an OMR / response sheet</h3><label class="dropzone" style="min-height:130px"><input id="omr-file" type="file" accept="application/pdf,image/png,image/jpeg,image/webp" ${S.busy ? "disabled" : ""}><strong>Upload your marked OMR or answer sheet</strong><small>First PDF page or one image · Matched by printed question number</small></label>${S.paper.responseDetections ? `<p class="small muted">${S.paper.responseDetections.length} matching rows read. Uncertain rows need manual review.</p>${button("use-omr", "Review detected OMR marks", true)}` : ""}</section></div><section class="card" style="margin-top:22px">${S.paper.originalAttempt ? `<div class="notice">Your original attempt is saved. Start a separate retry to record new answers.</div>${button("nav", "Open a separate retry →", true, 'data-view="retry"')}` : ""}<form id="responses-form"><fieldset class="response-fields" ${S.paper.originalAttempt ? "disabled" : ""}><div class="answer-grid">${S.paper.questions.map((q, i) => `<label class="answer-row"><span class="eyebrow">Q${esc(q.sourceNumber || i + 1)}</span><div><p>${esc(q.text)}</p><small>${esc(S.responseEvidence?.[q.id] || q.studentResponse?.evidence || "Enter your own response.")}</small></div><select name="answer-${i}" aria-label="Your answer to question ${esc(q.sourceNumber || i + 1)}"><option value="">Unresolved / not confirmed</option><option value="skip" ${S.responses[i] === null ? "selected" : ""}>I skipped this question</option>${q.options.map((_, j) => `<option value="${j}" ${S.responses[i] === j ? "selected" : ""}>${String.fromCharCode(65 + j)}</option>`).join("")}</select></label>`).join("")}</div><button class="btn" ${S.busy ? "disabled" : ""}>Confirm these responses & analyze →</button></fieldset></form><details class="key-entry"><summary>Use an official or coaching answer key</summary><p class="small muted">Enter one letter per extracted question, in the displayed order. The key's provenance is supplied by you, not certified by PaperBridge.</p><form id="key-form" class="stack"><input name="key" placeholder="Answer letters in displayed order" required><button class="btn secondary" ${S.busy || S.paper.hosted || S.paper.originalAttempt ? "disabled" : ""}>Apply my key</button></form></details><form id="marking-form" class="stack" style="margin-top:20px"><label>Marks / correct<input name="marks" type="number" value="${S.paper.marks}" min="1" max="4" required></label><label>Penalty / wrong<select name="penalty">${[0, 0.25, 0.5, 1].map((v) => `<option ${v === S.paper.penalty ? "selected" : ""}>${v}</option>`).join("")}</select></label><button class="btn secondary" ${S.busy || S.paper.hosted || S.paper.originalAttempt ? "disabled" : ""}>Save marking scheme</button></form></section>`;
 }
 function resultsView() {
   const r = S.report;
-  return `<section class="section-head"><div class="eyebrow muted">05 / Performance insights</div><h2>Understand what happened.</h2><p>${esc(r.keyLabel)}</p></section><div class="metrics"><div class="metric primary"><small>Your score</small><strong>${r.score}<span> / ${r.maxScore}</span></strong></div><div class="metric"><small>Correct</small><strong>${r.correct}</strong></div><div class="metric"><small>Incorrect</small><strong>${r.incorrect}</strong></div><div class="metric"><small>Unattempted / unknown</small><strong>${r.unattempted}</strong></div></div><section class="card"><h3>Topics to revisit</h3><p class="small muted">Prioritized by marks lost in the responses you confirmed. A few questions suggest review areas; they do not establish mastery.</p>${r.topics.map((t) => `<div class="topic"><div class="spread"><strong>${esc(t.topic)}</strong><span class="small">${t.correct}/${t.total} correct · ${t.lostMarks} marks to recover</span></div><div class="bar"><span style="width:${(t.correct / t.total) * 100}%"></span></div></div>`).join("")}</section>${r.review.map((q, i) => `<article class="card question-card" style="margin-top:20px"><div class="spread"><span class="eyebrow muted">Q${esc(q.sourceNumber || i + 1)} · ${esc(q.topic)}</span><span class="pill ${q.status === "CORRECT" ? "good" : "warn"}">${esc(q.status.toLowerCase())} · ${q.marks}</span></div><p class="question-text" style="margin-top:15px">${math(q.text)}</p>${img(q.imageUrl, "Question diagram")}${optionList(q, true, q.answer)}${q.misconception ? `<div class="trap"><b>The misconception behind this choice</b>${esc(q.misconception)}</div>` : ""}<details class="audit"><summary>See the reasoning</summary><p>${math(q.explanation)}</p></details>${button("coach-question", "Work through this with the coach →", true, `data-index="${i}"`)}</article>`).join("")}`;
+  return `<section class="section-head"><div class="eyebrow muted">05 / Performance insights</div><h2>Understand what happened.</h2><p>${esc(r.keyLabel)}</p><p class="small muted">${esc(r.scopeLabel || `${r.review.length} digitized questions`)}. This is not a full-paper score.</p></section><div class="metrics"><div class="metric primary"><small>Marks among digitized questions</small><strong>${r.score}<span> / ${r.maxScore}</span></strong></div><div class="metric"><small>Correct</small><strong>${r.correct}</strong></div><div class="metric"><small>Incorrect</small><strong>${r.incorrect}</strong></div><div class="metric"><small>Confirmed skipped</small><strong>${r.unattempted}</strong></div></div><section class="card"><h3>Topics to revisit</h3><p class="small muted">Prioritized by marks lost in the responses you confirmed. A few questions suggest review areas; they do not establish mastery.</p>${r.topics.map((t) => `<div class="topic"><div class="spread"><strong>${esc(t.topic)}</strong><span class="small">${t.correct}/${t.total} correct · ${t.lostMarks} marks to recover</span></div><div class="bar"><span style="width:${(t.correct / t.total) * 100}%"></span></div></div>`).join("")}</section>${r.review.map((q, i) => `<article class="card question-card" style="margin-top:20px"><div class="spread"><span class="eyebrow muted">Q${esc(q.sourceNumber || i + 1)} · ${esc(q.topic)}</span><span class="pill ${q.status === "CORRECT" ? "good" : "warn"}">${esc(q.status.toLowerCase())} · ${q.marks}</span></div><p class="question-text" style="margin-top:15px">${math(q.text)}</p>${img(q.imageUrl, "Question diagram")}${optionList(q, true, q.answer)}${q.misconception ? `<div class="trap"><b>A possible reasoning trap to explore</b>${esc(q.misconception)}</div>` : ""}<details class="audit"><summary>See the reasoning</summary><p>${math(q.explanation)}</p></details>${button("coach-question", "Work through this with the coach →", true, `data-index="${i}"`)}</article>`).join("")}`;
 }
 function coachView() {
   const q = S.paper.questions[S.coachIndex];
@@ -170,25 +307,35 @@ function coachView() {
   return `<section class="section-head"><div class="eyebrow muted">06 / A coach for this actual question</div><h2>Ask where your reasoning broke.</h2><p>Speak in English or Hinglish, or type your doubt. The live coach uses the selected question to offer a guiding step rather than a memorized answer.</p></section><div class="coach-layout"><section class="card"><label>Question<select id="coach-question">${S.paper.questions.map((q, i) => `<option value="${i}" ${i === S.coachIndex ? "selected" : ""}>Q${esc(q.sourceNumber || i + 1)} · ${esc(q.topic)}</option>`).join("")}</select></label><p class="question-text" style="margin-top:20px">${math(q.text)}</p>${img(q.imageUrl, "Question source diagram")}${optionList(q)}</section><section class="card"><h3>Think it through</h3><div class="chat" aria-live="polite">${S.chat.map((m, i) => `<div class="bubble ${m.role === "student" ? "student" : ""}"><small>${m.role === "student" ? "Your doubt" : "Live Socratic coach"}</small>${esc(m.text)}${m.role === "coach" ? "<br>" + button("speak", "Listen", true, `data-index="${i}"`) : ""}</div>`).join("")}</div><form id="coach-form"><label>Your doubt<textarea name="doubt" id="doubt" required placeholder="Describe the step you are unsure about…">${esc(S.doubt)}</textarea></label><div class="recorder"><button type="button" class="mic ${S.recording ? "recording" : ""}" data-action="record" ${S.busy ? "disabled" : ""} aria-label="${S.recording ? "Stop recording" : "Record your doubt"}">${S.recording ? "■" : "●"}</button><span class="small muted">${S.recording ? "Recording · Stop when finished" : "Record up to 30 seconds · Actual Meta transcription"}</span></div><button class="btn" ${S.busy || S.recording ? "disabled" : ""}>Ask for a guiding step →</button></form><p class="small muted" style="margin-top:18px">Voice transcription uses Meta. Optional audio playback uses your browser's speech synthesis.</p></section></div>`;
 }
 function render() {
-  const content =
+  const page =
     !S.signedIn || S.intro
       ? login()
       : shell(
-          S.view === "upload"
-            ? uploadView()
-            : !S.paper
-              ? uploadView()
-              : S.view === "review"
-                ? reviewView()
-                : S.view === "export"
-                  ? exportView()
-                  : S.view === "responses"
-                    ? responsesView()
-                    : S.view === "results" && S.report
-                      ? resultsView()
-                      : coachView(),
+          S.view === "judge"
+            ? judgeView(S, helpers)
+            : S.view === "home"
+              ? workspaceHome(S, helpers)
+              : S.view === "upload"
+                ? uploadView()
+                : !S.paper
+                  ? workspaceHome(S, helpers)
+                  : S.view === "host"
+                    ? hostView(S, helpers)
+                    : S.view === "integrations"
+                      ? integrationView(S, helpers)
+                      : S.view === "retry"
+                        ? retryView(S, helpers)
+                        : S.view === "review"
+                          ? reviewView()
+                          : S.view === "export"
+                            ? exportView()
+                            : S.view === "responses"
+                              ? responsesView()
+                              : S.view === "results" && S.report
+                                ? resultsView()
+                                : coachView(),
         );
-  $("#app").innerHTML = content
+  $("#app").innerHTML = page
     .replaceAll('href="/', 'href="' + BASE + "/")
     .replaceAll('src="/', 'src="' + BASE + "/");
 }
@@ -202,7 +349,10 @@ const readFile = (file) =>
 async function upload(file, unused, mode, subject) {
   if (!file) return;
   if (file.size > 25 * 1024 * 1024) throw new Error("Upload at most 25 MB.");
-  const uri = await readFile(file);
+  const isPdf =
+    file.type === "application/pdf" || file.name.toLowerCase().endsWith(".pdf");
+  const pdfHandle = isPdf ? await openPdf(file, BASE) : null;
+  const uri = isPdf ? null : await imagePreview(file);
   S.queue = [];
   S.selection = [];
   S.cursor = 0;
@@ -212,7 +362,7 @@ async function upload(file, unused, mode, subject) {
   const pdf =
     file.type === "application/pdf" || file.name.toLowerCase().endsWith(".pdf");
   const info = pdf
-    ? await api("/inspect-pdf", { base64: uri.split(",")[1], offset: 0 })
+    ? await inspectPdf(pdfHandle, 0, BASE)
     : {
         pageCount: 1,
         offset: 0,
@@ -231,6 +381,7 @@ async function upload(file, unused, mode, subject) {
     name: file.name,
     uri,
     pdf,
+    pdfHandle,
     mode,
     subject,
     metadata: {},
@@ -238,16 +389,16 @@ async function upload(file, unused, mode, subject) {
   info.previews.forEach((p) => {
     S.document.metadata[p.sourcePage - 1] = p;
   });
-  S.paper = await api("/papers", { name: file.name.replace(/\.[^.]+$/, "") });
+  S.paper = await api("/papers", {
+    name: file.name.replace(/\.[^.]+$/, ""),
+    journey: S.journey,
+  });
   S.queueIndex = 0;
   S.message = `All ${info.pageCount} pages are available locally. Select up to three; no Meta inference has run.`;
 }
 async function browsePages(offset) {
   const d = S.document;
-  const info = await api("/inspect-pdf", {
-    base64: d.uri.split(",")[1],
-    offset,
-  });
+  const info = await inspectPdf(d.pdfHandle, offset, BASE);
   Object.assign(d, { offset: info.offset, previews: info.previews });
   info.previews.forEach((p) => {
     d.metadata[p.sourcePage - 1] = p;
@@ -284,11 +435,7 @@ async function hydratePage(page) {
   if (page.image) return;
   const d = S.document;
   if (d.pdf) {
-    const result = await api("/render-pdf", {
-      base64: d.uri.split(",")[1],
-      pageNumbers: [page.sourcePage - 1],
-    });
-    Object.assign(page, result.pageDetails[0], { image: result.pages[0] });
+    Object.assign(page, await renderPdfPage(d.pdfHandle, page.sourcePage - 1));
   } else Object.assign(page, { image: d.uri, nativeText: "" });
 }
 async function processPages(cap = 4) {
@@ -301,7 +448,7 @@ async function processPages(cap = 4) {
   cap = textOnly ? 1 : cap;
   S.progress = `Digitizing only source page ${page.sourcePage}. Maximum ${cap} model requests. Other pages and answer audits will not run automatically.`;
   render();
-  S.paper = await api(`/papers/${S.paper.id}/pages`, {
+  S.paper = await infer(`/papers/${S.paper.id}/pages`, {
     ...page,
     recoverLayout: cap === 4,
     textOnly,
@@ -346,18 +493,12 @@ async function exportPdf(format) {
 async function omr(file) {
   if (!file) return;
   if (file.size > 25 * 1024 * 1024) throw new Error("OMR upload limit: 25 MB.");
-  let image = await readFile(file);
-  if (
-    file.type === "application/pdf" ||
-    file.name.toLowerCase().endsWith(".pdf")
-  )
-    image = (
-      await api("/render-pdf", {
-        base64: image.split(",")[1],
-        pageNumbers: [0],
-      })
-    ).pages[0];
-  S.paper = await api(`/papers/${S.paper.id}/responses`, {
+  const pdf =
+    file.type === "application/pdf" || file.name.toLowerCase().endsWith(".pdf");
+  const image = pdf
+    ? (await renderPdfPage(await openPdf(file, BASE), 0)).image
+    : await imagePreview(file);
+  S.paper = await infer(`/papers/${S.paper.id}/responses`, {
     image,
     cleanScan: true,
   });
@@ -370,15 +511,16 @@ document.addEventListener("submit", (event) => {
   const data = Object.fromEntries(new FormData(form));
   if (form.id === "login-form")
     task(async () => {
-      await api("/login", data);
+      const session = await api("/login", data);
+      S.connectorConfigured = session.connectorConfigured;
       S.signedIn = true;
       S.intro = false;
       S.paper = null;
       S.report = null;
-      S.view = "upload";
-      sessionStorage.removeItem("pb-live-paper");
+      S.view = location.pathname.endsWith("/judge") ? "judge" : "home";
+      await loadLibrary();
       S.models = await api("/models");
-    }, "Connecting your live workspace…");
+    }, "Opening your workspace…");
   if (form.classList.contains("edit-form"))
     task(async () => {
       const q = S.paper.questions.find((q) => q.id === form.dataset.id);
@@ -406,7 +548,7 @@ document.addEventListener("submit", (event) => {
     }, "Saving edits and recropping the original pixels…");
   if (form.id === "region-form")
     task(async () => {
-      S.paper = await api(`/papers/${S.paper.id}/recover`, {
+      S.paper = await infer(`/papers/${S.paper.id}/recover`, {
         pageIndex: S.pageIndex,
         box: parseBox(data.box),
         sourceNumber: data.sourceNumber,
@@ -416,13 +558,56 @@ document.addEventListener("submit", (event) => {
       S.message =
         "The selected source region was extracted with one Spark request. Review it against the source.";
     }, "Extracting only the selected question region · maximum 1 request…");
+  if (form.id === "host-selection-form")
+    task(async () => {
+      S.paper = await api(`/papers/${S.paper.id}/selection`, {
+        questionIds: S.paper.questions
+          .filter((q) => data["question-" + q.id] === "on")
+          .map((q) => q.id),
+      });
+      S.message =
+        "Hosted-test selection saved. Excluded questions remain in your source review.";
+    }, "Saving the reviewed subset…");
+  if (form.id === "hosting-settings-form")
+    task(async () => {
+      S.paper = await api(`/papers/${S.paper.id}/settings`, {
+        name: data.name,
+        marks: Number(data.marks),
+        penalty: Number(data.penalty),
+        durationMins: Number(data.durationMins),
+      });
+      S.message = "Test settings saved.";
+    }, "Saving settings…");
+  if (form.id === "shared-paper-form")
+    task(async () => {
+      const url = new URL(data.url);
+      if (url.origin !== location.origin)
+        throw new Error("Use a share link from this PaperBridge portal.");
+      const token = url.pathname.split("/").pop();
+      S.paper = await api("/hosted/" + token + "/import", {});
+      S.view = "responses";
+      await loadLibrary();
+    }, "Opening a private copy of this shared paper…");
   if (form.id === "responses-form")
     task(async () => {
       const answers = S.paper.questions.map((_, i) =>
-        data["answer-" + i] === "" ? null : Number(data["answer-" + i]),
+        ["", "skip"].includes(data["answer-" + i])
+          ? null
+          : Number(data["answer-" + i]),
       );
       S.responses = answers;
-      S.report = await api(`/papers/${S.paper.id}/analyze`, { answers });
+      S.report = await api(`/papers/${S.paper.id}/analyze`, {
+        answers,
+        confirmed: true,
+        responseStates: S.paper.questions.map((_, i) =>
+          data["answer-" + i] === "skip"
+            ? "SKIPPED"
+            : data["answer-" + i] === ""
+              ? "UNRESOLVED"
+              : "SELECTED",
+        ),
+      });
+      S.paper = await api(`/papers/${S.paper.id}`);
       S.view = "results";
     }, "Scoring your confirmed responses…");
   if (form.id === "key-form")
@@ -456,7 +641,7 @@ document.addEventListener("submit", (event) => {
       const history = S.chat;
       S.chat.push({ role: "student", text: doubt });
       S.doubt = "";
-      const value = await api(`/papers/${S.paper.id}/coach`, {
+      const value = await infer(`/papers/${S.paper.id}/coach`, {
         questionId: S.paper.questions[S.coachIndex].id,
         doubt,
         history,
@@ -468,6 +653,68 @@ document.addEventListener("click", (event) => {
   const el = event.target.closest("[data-action]");
   if (!el || el.disabled) return;
   const a = el.dataset.action;
+  if (a === "choose-journey") {
+    const role = el.dataset.journey;
+    if (!S.signedIn) {
+      S.journey = role;
+      history.pushState({}, "", BASE + "/" + role);
+      render();
+      $("#judge-access")?.scrollIntoView({ behavior: "smooth" });
+    } else
+      task(() => enterJourney(role), "Opening the " + role + " workspace…");
+  }
+  if (a === "judge") {
+    S.view = "judge";
+    S.intro = false;
+    history.pushState({}, "", BASE + "/judge");
+    render();
+    window.scrollTo({ top: 0 });
+  }
+  if (a === "refresh-papers") task(loadLibrary, "Refreshing your papers…");
+  if (a === "copy-evidence")
+    task(async () => {
+      const copy = await api("/papers/from-evidence", { journey: S.journey });
+      await openPaper(copy.id);
+      await loadLibrary();
+      S.message =
+        "Copied the actual saved extraction. No new model inference was used. Responses you enter here are for this example.";
+    }, "Copying the saved uploaded-page evidence…");
+  if (a === "open-paper")
+    task(() => openPaper(el.dataset.id), "Opening this paper…");
+  if (a === "host-paper")
+    task(async () => {
+      S.paper = await api(`/papers/${S.paper.id}/host`, {});
+      await loadLibrary();
+    }, "Hosting this reviewed paper version…");
+  if (a === "copy-test-link")
+    task(async () => {
+      await navigator.clipboard.writeText(
+        location.origin + BASE + "/test/" + S.paper.hostToken,
+      );
+      S.message = "Test link copied.";
+    }, "Copying link…");
+  if (a === "share-student")
+    task(async () => {
+      const copy = await api(`/papers/${S.paper.id}/share-student`, {});
+      await enterJourney("student", "responses");
+      S.paper = copy;
+      S.responses = [];
+      S.report = null;
+      await loadLibrary();
+    }, "Creating a private student analysis from the shared paper…");
+  if (a === "publish-paper")
+    task(async () => {
+      S.paper = await api(`/papers/${S.paper.id}/publish`, {});
+    }, "Publishing and reading back the real destination receipt…");
+  if (a === "check-receipt")
+    task(async () => {
+      S.paper.publication = await api(`/papers/${S.paper.id}/receipt`);
+    }, "Checking the saved destination test…");
+  if (a === "start-retry")
+    task(async () => {
+      const result = await api(`/papers/${S.paper.id}/retry`, {});
+      location.assign(BASE + "/retry/" + result.token);
+    }, "Preparing a separate retry…");
   if (a === "nav") {
     S.view = el.dataset.view;
     S.error = "";
@@ -482,7 +729,7 @@ document.addEventListener("click", (event) => {
   if (a === "logout")
     task(async () => {
       await api("/logout", {});
-      sessionStorage.removeItem("pb-live-paper");
+      sessionStorage.removeItem("pb-" + S.journey + "-paper");
       S.signedIn = false;
       S.paper = null;
     }, "Signing out…");
@@ -512,6 +759,7 @@ document.addEventListener("click", (event) => {
     );
   if (a === "back-workspace") {
     S.intro = false;
+    S.view = "home";
     render();
   }
   if (a === "intro") {
@@ -530,7 +778,7 @@ document.addEventListener("click", (event) => {
   }
   if (a === "audit")
     task(async () => {
-      S.paper = await api(`/papers/${S.paper.id}/audit`, {
+      S.paper = await infer(`/papers/${S.paper.id}/audit`, {
         questionId: el.dataset.id,
       });
       S.report = null;
@@ -547,7 +795,7 @@ document.addEventListener("click", (event) => {
   }
   if (a === "recover")
     task(async () => {
-      S.paper = await api(`/papers/${S.paper.id}/recover`, {
+      S.paper = await infer(`/papers/${S.paper.id}/recover`, {
         pageIndex: S.pageIndex,
       });
     }, "Checking one missing source block · maximum 2 model requests…");
@@ -574,9 +822,10 @@ document.addEventListener("click", (event) => {
     S.responseEvidence = {};
     S.responses = S.paper.questions.map((q) => {
       S.responseEvidence[q.id] = q.studentResponse?.evidence || "";
-      return q.studentResponse?.confidence >= 0.9
+      return q.studentResponse?.confidence >= 0.9 &&
+        q.studentResponse.selectedIndex !== null
         ? q.studentResponse.selectedIndex
-        : null;
+        : undefined;
     });
     S.message =
       "Detected marks are filled as proposals. Confirm or correct every row before analysis.";
@@ -591,7 +840,7 @@ document.addEventListener("click", (event) => {
       const row = rows.length === 1 ? rows[0] : null;
       S.responseEvidence[q.id] =
         row?.evidence || "No unique OMR match; enter manually.";
-      return row?.selectedIndex ?? null;
+      return row?.selectedIndex ?? undefined;
     });
     S.message =
       "OMR proposals filled. Multiple, uncertain or unmatched marks remain blank.";
@@ -655,7 +904,11 @@ document.addEventListener("change", (event) => {
   }
   if (event.target.name?.startsWith("answer-"))
     S.responses[Number(event.target.name.slice(7))] =
-      event.target.value === "" ? null : Number(event.target.value);
+      event.target.value === ""
+        ? undefined
+        : event.target.value === "skip"
+          ? null
+          : Number(event.target.value);
 });
 document.addEventListener("input", (event) => {
   if (event.target.id === "doubt") S.doubt = event.target.value;
@@ -730,7 +983,7 @@ async function record() {
         );
         const uri = await readFile(new Blob([buffer], { type: "audio/wav" }));
         S.doubt = (
-          await api(`/papers/${S.paper.id}/voice`, {
+          await infer(`/papers/${S.paper.id}/voice`, {
             audioBase64: uri.split(",")[1],
           })
         ).transcript;
@@ -757,31 +1010,50 @@ window.addEventListener("pagehide", () => {
   stream?.getTracks().forEach((t) => t.stop());
 });
 async function init() {
+  const path = location.pathname.slice(BASE.length);
+  const assessment = path.match(/^\/(test|t|retry)\/(.+)$/);
+  if (assessment) {
+    await mountAssessment({
+      token: assessment[2],
+      retry: assessment[1] === "retry",
+      BASE,
+      esc,
+      math,
+      img,
+    });
+    return;
+  }
   try {
     S.showcase = await api("/showcase");
   } catch {}
   try {
-    await api("/session");
+    const session = await api("/session");
     S.signedIn = true;
-    const id = sessionStorage.getItem("pb-live-paper");
+    S.connectorConfigured = session.connectorConfigured;
+    S.intro = path === "/";
+    S.view = path === "/judge" ? "judge" : "home";
+    const id = sessionStorage.getItem("pb-" + S.journey + "-paper");
     if (id) {
       try {
-        S.paper = await api("/papers/" + id);
-        S.view = S.paper.pages.length ? "review" : "upload";
-        if (S.paper.analysisAnswers) {
-          S.responses = S.paper.analysisAnswers;
-          S.report = await api(`/papers/${id}/analysis`);
-        }
+        const view = S.view;
+        await openPaper(id, false);
+        S.view = view;
       } catch {
-        sessionStorage.removeItem("pb-live-paper");
+        sessionStorage.removeItem("pb-" + S.journey + "-paper");
       }
     }
+    await loadLibrary();
     render();
     S.models = await api("/models");
+    S.allowance = await api("/allowance");
+    if (sessionStorage.getItem("pb-" + S.journey + "-pending-job"))
+      await task(resumeProcessing, "Restoring saved processing progress…");
   } catch {}
   render();
 }
+
 init();
+window.addEventListener("popstate", () => location.reload());
 
 let cropDrag = null;
 const cropPoint = (event, area) => {

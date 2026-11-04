@@ -86,6 +86,10 @@ export function validateAnswers(questions, answers) {
 }
 
 export function grade(paper, answers) {
+  if (paper.hosted && paper.selectedQuestionIds)
+    paper = { ...paper, questions: includedQuestions(paper) };
+  if (!paper.questions.length)
+    throw fail(422, "Digitize at least one question before calculating marks.");
   if (paper.questions.some((q) => !Number.isInteger(q.correctIndex)))
     throw fail(
       422,
@@ -144,6 +148,7 @@ export function grade(paper, answers) {
 }
 
 export function publicPaper(paper) {
+  paper = { ...paper, questions: includedQuestions(paper) };
   return {
     id: paper.id,
     name: paper.name,
@@ -151,6 +156,9 @@ export function publicPaper(paper) {
     penalty: paper.penalty,
     durationMins: paper.durationMins,
     mode: paper.mode,
+    keyLabel: paper.questions.every((q) => q.keySource === "PROVIDED_KEY")
+      ? "Uses a user-supplied answer key"
+      : "Uses AI-derived or edited answers; scores are estimates",
     questions: paper.questions.map((q) => ({
       id: q.id,
       text: q.text,
@@ -162,8 +170,16 @@ export function publicPaper(paper) {
 }
 
 export function canPublish(paper) {
+  const questions = includedQuestions(paper);
   return (
-    paper.questions.length > 0 &&
-    paper.questions.every((q) => q.audit.status === "VERIFIED")
+    questions.length > 0 &&
+    questions.every(
+      (q) => q.audit.status === "VERIFIED" && Number.isInteger(q.correctIndex),
+    )
   );
+}
+export function includedQuestions(paper) {
+  return paper.selectedQuestionIds
+    ? paper.questions.filter((q) => paper.selectedQuestionIds.includes(q.id))
+    : paper.questions;
 }

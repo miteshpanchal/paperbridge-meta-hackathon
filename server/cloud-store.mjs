@@ -107,4 +107,7 @@ export class CloudStore {
     await this.save(record, generation);
     return result;
   }
+  async create(record) {
+    return this.save(record);
+  }
 }

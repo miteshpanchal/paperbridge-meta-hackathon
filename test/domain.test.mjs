@@ -71,6 +71,15 @@ test("incomplete or unavailable audits block hosting", () => {
     /single-correct/,
   );
 });
+test("hosting a reviewed subset excludes incomplete questions from the test and grading",()=>{
+  const p=paper();p.questions.forEach(q=>q.audit={status:"VERIFIED"});
+  p.questions[2].audit.status="NEEDS_REVIEW";
+  p.selectedQuestionIds=p.questions.slice(0,2).map(q=>q.id);
+  assert.equal(canPublish(p),true);
+  assert.equal(publicPaper(p).questions.length,2);
+  assert.equal(grade({...p,hosted:true},[0,1]).maxScore,8);
+  assert.equal(grade({...p,hosted:true},[0,1]).score,8);
+});
 test("SAM source pixels become normalized overlay coordinates without guessing regions", () => {
   assert.deepEqual(
     parseSam(

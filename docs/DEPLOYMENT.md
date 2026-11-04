@@ -24,6 +24,13 @@ PORT=8080
 APP_URL=https://hackathon.clarifycue.com
 BASE_PATH=
 DATA_BUCKET=<dedicated-private-hackathon-bucket>
+TASKS_QUEUE=projects/<project>/locations/asia-south1/queues/paperbridge-inference
+TASKS_SERVICE_ACCOUNT=<dedicated-worker-service-account>
+WORKER_URL=https://<this-hackathon-service>.run.app
+META_TOTAL_BUDGET_USD=5
+META_DAILY_BUDGET_USD=1
+META_DAILY_REQUEST_LIMIT=48
+META_SESSION_REQUEST_LIMIT=24
 JUDGE_EMAIL=<private judge email>
 JUDGE_PASSWORD=<random password, at least 12 characters>
 SESSION_SECRET=<random secret, at least 32 characters>
@@ -41,7 +48,13 @@ Use Secret Manager or your provider's secret settings for credentials. Never add
 
 The local file adapter is still available when `DATA_BUCKET` is unset. Use it with a persistent Docker volume and only one Node process; it is not durable on default Cloud Run storage.
 
-**Uploads/model calls:** Set an application request timeout long enough for per-page sequential model work. Cloud Run's HTTP/1 request-size limit may be lower than the portal's 25 MB source-file limit once base64 JSON encoding is added; configure the displayed upload limit for your deployment or use direct object-storage uploads before accepting maximum-size papers publicly. API processing is synchronous per page in this release.
+**Uploads/model calls:** Set an application request timeout long enough for per-page sequential model work. Cloud Run's HTTP/1 request-size limit may be lower than the portal's 25 MB source-file limit once base64 JSON encoding is added; configure the displayed upload limit for your deployment or use direct object-storage uploads before accepting maximum-size papers publicly. Inference actions return persisted jobs and the browser polls progress. Cloud Run refuses to start without TASKS_QUEUE; local-only background execution is not used in cloud hosting.
+
+## Dedicated hackathon site and worker
+
+Deploy a new Firebase Hosting site/target from this repository for hackathon.clarifycue.com. Leave the main site and apex/www DNS records untouched. Use host-only Secure `__session` cookies, as required by Firebase Hosting. Queue workers call WORKER_URL directly, bypassing Hosting's 60-second request deadline. The worker route verifies a Google-signed OIDC token, its audience and the exact configured service-account email; queue headers alone are insufficient.
+
+Use a private bucket, dedicated service identity, server-only Secret Manager values, a small instance maximum, zero minimum instances and bounded queue dispatch. Never copy the main production database credentials into this service. Establish the agreed cloud-spending limit before provisioning.
 
 ## Firebase Hosting path routing example
 

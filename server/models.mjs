@@ -1,6 +1,7 @@
 import { fail, normalizeQuestions } from "./domain.mjs";
 import { AsyncLocalStorage } from "node:async_hooks";
 const inferenceBudget = new AsyncLocalStorage();
+const inferenceActor = new AsyncLocalStorage();
 
 // Images travel only in image inputs, never as base64 inside text tokens.
 const questionContext = (q) => ({
@@ -58,12 +59,19 @@ export function parseSam(text, label) {
 }
 
 export class MetaModels {
+  withActor(owner, operation, notify) {
+    return inferenceActor.run(
+      { owner, notify: notify || inferenceActor.getStore()?.notify },
+      operation,
+    );
+  }
   async withBudget(max, operation) {
     const usage = { max, used: 0, models: {} };
     const value = await inferenceBudget.run(usage, operation);
     return { value, usage };
   }
-  claim(model) {
+  async claim(model) {
+    await inferenceActor.getStore()?.notify?.(model);
     const usage = inferenceBudget.getStore();
     if (!usage) return;
     if (usage.used >= usage.max)
@@ -74,12 +82,23 @@ export class MetaModels {
     usage.used++;
     usage.models[model] = (usage.models[model] || 0) + 1;
   }
-  constructor(config = process.env, transport = fetch) {
+  constructor(config = process.env, transport = fetch, allowance = null) {
     this.key = config.MODEL_API_KEY;
     this.base = config.META_API_BASE_URL || "https://api.meta.ai/v1";
     if (new URL(this.base).protocol !== "https:")
       throw new Error("Meta API requires HTTPS.");
     this.transport = transport;
+    this.allowance = allowance;
+    this.sparkOutputLimit = Number(config.META_SPARK_OUTPUT_LIMIT || 12000);
+    this.wonderOutputLimit = Number(config.META_WONDER_OUTPUT_LIMIT || 16000);
+    if (
+      ![this.sparkOutputLimit, this.wonderOutputLimit].every(
+        (n) => Number.isInteger(n) && n > 0 && n <= 32000,
+      )
+    )
+      throw new Error(
+        "Configure positive model output limits of at most 32000 tokens.",
+      );
   }
   async request(endpoint, body, timeout = 120000) {
     if (!this.key)
@@ -142,7 +161,11 @@ export class MetaModels {
   async segment(image, labels = ["diagram"]) {
     const boxes = [];
     for (const label of labels) {
-      this.claim("sam-3.1");
+      await this.claim("sam-3.1");
+      const reservation = await this.allowance?.reserve(
+        "sam-3.1",
+        inferenceActor.getStore()?.owner || "judge",
+      );
       const response = await this.request("/responses", {
         model: "sam-3.1",
         stream: true,
@@ -159,6 +182,7 @@ export class MetaModels {
         ],
       });
       const raw = await response.text();
+      await this.allowance?.settle(reservation);
       let text = "";
       for (const line of raw.split("\n")) {
         if (!line.startsWith("data:")) continue;
@@ -186,15 +210,62 @@ export class MetaModels {
   }
   async chat(model, messages) {
     if (!MODELS.includes(model)) throw fail(400, "Unsupported model");
-    this.claim(model);
+    await this.claim(model);
+    const outputLimit =
+      model === "muse-wonder-1.0"
+        ? this.wonderOutputLimit
+        : this.sparkOutputLimit;
+    let reservation;
+    if (this.allowance) {
+      const status = await this.allowance.status(
+        inferenceActor.getStore()?.owner || "judge",
+      );
+      if (
+        status.requests >= status.requestLimit ||
+        status.sessionRequests >= status.sessionRequestLimit ||
+        status.remainingUsd <= 0 ||
+        status.totalRemainingUsd <= 0
+      )
+        throw fail(
+          429,
+          "The judge inference allowance is exhausted; no new model request was sent.",
+        );
+      const input = messages.map((message) => ({
+        role: message.role,
+        content:
+          typeof message.content === "string"
+            ? message.content
+            : message.content.map((item) =>
+                item.type === "image_url"
+                  ? { type: "input_image", image_url: item.image_url.url }
+                  : { type: "input_text", text: item.text },
+              ),
+      }));
+      const count = await (
+        await this.request("/responses/input_tokens", { model, input }, 30000)
+      ).json();
+      if (!Number.isInteger(count.input_tokens) || count.input_tokens < 0)
+        throw fail(
+          502,
+          "Input token allowance could not be checked. No generation was started.",
+        );
+      reservation = await this.allowance.reserve(
+        model,
+        inferenceActor.getStore()?.owner || "judge",
+        count.input_tokens,
+        outputLimit,
+      );
+    }
     const data = await (
       await this.request("/chat/completions", {
         model,
         messages,
         reasoning_effort: model === "muse-wonder-1.0" ? "high" : "low",
         response_format: { type: "json_object" },
+        max_completion_tokens: outputLimit,
       })
     ).json();
+    await this.allowance?.settle(reservation, data.usage);
     const content = data.choices?.[0]?.message?.content;
     if (typeof content !== "string")
       throw fail(502, "Model did not return structured content.");
@@ -409,6 +480,21 @@ export class MetaModels {
       audio.subarray(8, 12).toString() !== "WAVE"
     )
       throw fail(422, "Record PCM WAV audio before transcribing.");
+    if (
+      audio.length > 44 + 30 * 48000 ||
+      audio.readUInt16LE(22) !== 1 ||
+      audio.readUInt32LE(24) !== 24000 ||
+      audio.readUInt16LE(34) !== 16
+    )
+      throw fail(422, "Record at most 30 seconds of 24 kHz mono PCM WAV.");
+    await this.claim("muse-voice-transcribe-1.0");
+    const reservation = await this.allowance?.reserve(
+      "muse-voice-transcribe-1.0",
+      inferenceActor.getStore()?.owner || "judge",
+      0,
+      0,
+      (audio.length - 44) / 48000,
+    );
     const form = new FormData();
     form.set(
       "request",
@@ -427,6 +513,7 @@ export class MetaModels {
     );
     form.set("audio", new Blob([audio], { type: "audio/wav" }), "doubt.wav");
     const result = await (await this.request("/asr/transcribe", form)).json();
+    await this.allowance?.settle(reservation);
     if (typeof result.transcript !== "string" || !result.transcript.trim())
       throw fail(422, "No speech detected. Try again or type your doubt.");
     return { transcript: result.transcript };
