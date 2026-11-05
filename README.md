@@ -1,5 +1,15 @@
 # PaperBridge — from scan to editable exam
 
+[![Open in GitHub Codespaces](https://github.com/codespaces/badge.svg)](https://codespaces.new/miteshpanchal/paperbridge-meta-hackathon)
+[![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/miteshpanchal/paperbridge-meta-hackathon)
+
+> **🚀 1-Click Live Hackathon Evaluation**:
+> Click **[Open in GitHub Codespaces](https://codespaces.new/miteshpanchal/paperbridge-meta-hackathon)** above to spin up and test PaperBridge live in the cloud directly inside GitHub.
+>
+> - **Pre-configured Demo Account**: `judge@paperbridge.demo`
+> - **Password**: `THXLU6iKGdT4IGLKf0Xs` (Pre-filled for 1-click entry)
+> - **Live Port**: `4310` (Automatically forwarded by GitHub)
+
 A standalone Meta AI hackathon application for turning an **actual uploaded PDF or photograph** into editable questions, preserved diagram crops, and a clean digital paper. Students can also review the paper they attempted using visible marks, their own responses, or an uploaded OMR.
 
 There is no preloaded question bank, authored demonstration question, fabricated transcript, or offline answer path. Without a working Meta API key, live extraction reports an error. Uploaded exam papers and generated private exports are not included in this public repository.

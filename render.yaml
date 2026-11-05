@@ -1,0 +1,15 @@
+services:
+  - type: web
+    name: paperbridge-meta-hackathon
+    runtime: docker
+    plan: free
+    region: oregon
+    envVars:
+      - key: JUDGE_EMAIL
+        value: judge@paperbridge.demo
+      - key: JUDGE_PASSWORD
+        value: THXLU6iKGdT4IGLKf0Xs
+      - key: SESSION_SECRET
+        generateValue: true
+      - key: MODEL_API_KEY
+        sync: false

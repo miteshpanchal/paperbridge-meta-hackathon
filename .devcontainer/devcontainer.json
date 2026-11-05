@@ -1,0 +1,20 @@
+{
+  "name": "PaperBridge - Meta AI Hackathon",
+  "image": "mcr.microsoft.com/devcontainers/universal:2",
+  "forwardPorts": [4310],
+  "portsAttributes": {
+    "4310": {
+      "label": "PaperBridge Live Portal",
+      "onAutoForward": "openBrowser"
+    }
+  },
+  "containerEnv": {
+    "HOST": "0.0.0.0",
+    "PORT": "4310",
+    "JUDGE_EMAIL": "judge@paperbridge.demo",
+    "JUDGE_PASSWORD": "THXLU6iKGdT4IGLKf0Xs",
+    "SESSION_SECRET": "bde407f0e5a9c1ce9f92479c034cc7c1c163900f26034de4ae4482ed517a60f213e68bf24953143fdd7adb400d74fb79"
+  },
+  "postCreateCommand": "npm ci --ignore-scripts && pip install -r requirements.txt",
+  "postStartCommand": "HOST=0.0.0.0 PORT=4310 node server/index.mjs"
+}
