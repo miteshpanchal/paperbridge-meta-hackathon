@@ -11,3 +11,5 @@ output/
 # Temporary package-install artifacts created by local tooling.
 /pip-*/
 /tmp*
+*.avi
+*.mp4
