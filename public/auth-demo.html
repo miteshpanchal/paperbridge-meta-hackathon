@@ -1,0 +1,33 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>PaperBridge Demo Sign-In</title>
+</head>
+<body style="background:#0d1117;color:#fff;font-family:sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;margin:0;">
+  <p>Authenticating demo workspace...</p>
+  <script>
+    const base = document.querySelector('meta[name="app-base"]')?.content || '/metahackathon';
+    const params = new URLSearchParams(location.search);
+    const view = params.get('view') || 'home';
+    const journey = params.get('journey') || 'organization';
+
+    fetch(base + '/api/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        email: 'judge@paperbridge.demo',
+        password: 'THXLU6iKGdT4IGLKf0Xs'
+      })
+    })
+    .then(r => r.json())
+    .then(() => {
+      sessionStorage.setItem('pb-journey', journey);
+      window.location.href = base + '/' + (view === 'home' ? journey : view);
+    })
+    .catch(err => {
+      document.body.innerHTML = '<p>Login error: ' + err.message + '</p>';
+    });
+  </script>
+</body>
+</html>

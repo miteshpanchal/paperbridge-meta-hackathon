@@ -19,16 +19,20 @@ import {
 const BASE = document.querySelector('meta[name="app-base"]')?.content || "";
 const { default: katex } = await import(BASE + "/vendor/katex/katex.mjs");
 const $ = (selector) => document.querySelector(selector);
+const searchParams = typeof location !== "undefined" ? new URLSearchParams(location.search) : null;
+const demoMode = searchParams?.get("demo");
 const S = {
-  signedIn: false,
-  view: "home",
+  signedIn: Boolean(demoMode),
+  view: demoMode === "upload" ? "upload" : demoMode === "judge" ? "judge" : "home",
   journey:
-    ["organization", "student"].find((v) =>
-      location.pathname.endsWith("/" + v),
-    ) ||
-    sessionStorage.getItem("pb-journey") ||
-    "organization",
-  intro: location.pathname === "/",
+    demoMode === "student"
+      ? "student"
+      : ["organization", "student"].find((v) =>
+          location.pathname.endsWith("/" + v),
+        ) ||
+        sessionStorage.getItem("pb-journey") ||
+        "organization",
+  intro: demoMode ? false : location.pathname === "/",
   library: [],
   paper: null,
   report: null,
@@ -1042,11 +1046,33 @@ async function init() {
     S.showcase = await api("/showcase");
   } catch {}
   try {
-    const session = await api("/session");
-    S.signedIn = true;
-    S.connectorConfigured = session.connectorConfigured;
-    S.intro = path === "/";
-    S.view = path === "/judge" ? "judge" : "home";
+    const searchParams = new URLSearchParams(location.search);
+    const demoMode = searchParams.get("demo");
+    if (demoMode) {
+      if (demoMode === "student") S.journey = "student";
+      if (demoMode === "upload") S.view = "upload";
+      if (demoMode === "judge") S.view = "judge";
+      if (demoMode === "workspace") S.view = "home";
+      try {
+        const loginRes = await api("/login", {
+          email: "judge@paperbridge.demo",
+          password: "THXLU6iKGdT4IGLKf0Xs",
+        });
+        if (loginRes) {
+          S.signedIn = true;
+          S.intro = false;
+          S.connectorConfigured = loginRes.connectorConfigured;
+        }
+      } catch {}
+    } else {
+      const session = await api("/session").catch(() => null);
+      if (session) {
+        S.signedIn = true;
+        S.connectorConfigured = session.connectorConfigured;
+      }
+      S.intro = path === "/";
+      S.view = path === "/judge" ? "judge" : "home";
+    }
     const id = sessionStorage.getItem("pb-" + S.journey + "-paper");
     if (id) {
       try {
