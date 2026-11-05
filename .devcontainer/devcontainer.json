@@ -18,3 +18,4 @@
   "postCreateCommand": "npm ci --ignore-scripts && pip install -r requirements.txt",
   "postStartCommand": "HOST=0.0.0.0 PORT=4310 node server/index.mjs"
 }
+

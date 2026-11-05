@@ -1,9 +1,13 @@
 # PaperBridge — from scan to editable exam
 
+[![Live Production URL](https://img.shields.io/badge/Live%20Demo-clarifycue.com%2Fmetahackathon-emerald?style=for-the-badge&logo=googlechrome&logoColor=white)](https://clarifycue.com/metahackathon)
 [![Open in GitHub Codespaces](https://github.com/codespaces/badge.svg)](https://codespaces.new/miteshpanchal/paperbridge-meta-hackathon)
 [![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/miteshpanchal/paperbridge-meta-hackathon)
 
-> **🚀 1-Click Live Hackathon Evaluation**:
+> **🌐 Live Production Deployment**:
+> **[https://clarifycue.com/metahackathon](https://clarifycue.com/metahackathon)** *(or [clarifycue.com/hackathon](https://clarifycue.com/hackathon))*
+>
+> **🚀 1-Click Cloud Sandbox (GitHub Codespaces)**:
 > Click **[Open in GitHub Codespaces](https://codespaces.new/miteshpanchal/paperbridge-meta-hackathon)** above to spin up and test PaperBridge live in the cloud directly inside GitHub.
 >
 > - **Pre-configured Demo Account**: `judge@paperbridge.demo`
