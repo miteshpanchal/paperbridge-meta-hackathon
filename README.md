@@ -5,7 +5,7 @@
 [![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/miteshpanchal/paperbridge-meta-hackathon)
 
 > **🌐 Live Production Deployment**:
-> **[https://clarifycue.com/metahackathon](https://clarifycue.com/metahackathon)** *(or [clarifycue.com/hackathon](https://clarifycue.com/hackathon))*
+> **[https://clarifycue.com/metahackathon](https://clarifycue.com/metahackathon)** 
 >
 > **🚀 1-Click Cloud Sandbox (GitHub Codespaces)**:
 > Click **[Open in GitHub Codespaces](https://codespaces.new/miteshpanchal/paperbridge-meta-hackathon)** above to spin up and test PaperBridge live in the cloud directly inside GitHub.
