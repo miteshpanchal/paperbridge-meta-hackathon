@@ -21,6 +21,16 @@ function remap(box, parent) {
         parent[1] + (box[3] / 1000) * (parent[3] - parent[1]),
       ];
 }
+function regionQuestion(region, questions) {
+  const numbered = region.sourceNumber && questions.find((q) => q.sourceNumber === region.sourceNumber);
+  if (numbered) return numbered;
+  return questions.find((q) => {
+    if (!Array.isArray(q.sourceBox)) return false;
+    const cx = (q.sourceBox[0] + q.sourceBox[2]) / 2;
+    const cy = (q.sourceBox[1] + q.sourceBox[3]) / 2;
+    return cx >= region.box[0] && cx <= region.box[2] && cy >= region.box[1] && cy <= region.box[3];
+  });
+}
 function targetRegion(regions, questions) {
   return regions
     .slice()
@@ -28,15 +38,11 @@ function targetRegion(regions, questions) {
       (a, b) => Number(b.hasGraphicalOptions) - Number(a.hasGraphicalOptions),
     )
     .find(
-      (region) =>
-        region.sourceNumber &&
-        (!questions.some((q) => q.sourceNumber === region.sourceNumber) ||
-          (region.hasGraphicalOptions &&
-            questions.some(
-              (q) =>
-                q.sourceNumber === region.sourceNumber &&
-                !q.options.some((o) => o.imageBox),
-            ))),
+      (region) => {
+        const q = regionQuestion(region, questions);
+        return region.complete !== false && (!q ||
+          (region.hasGraphicalOptions && !q.options.some((o) => o.imageBox)));
+      },
     );
 }
 async function recoverRegion(
@@ -47,8 +53,16 @@ async function recoverRegion(
   render,
   subject,
 ) {
+  // Layout boxes are estimates. Keep context below graphical choices so a tight
+  // predicted boundary cannot silently clip the last waveform.
+  const cropBox = [
+    Math.max(0, region.box[0] - 20),
+    Math.max(0, region.box[1] - 20),
+    Math.min(1000, region.box[2] + 20),
+    Math.min(1000, region.box[3] + Math.max(30, (region.box[3] - region.box[1]) * 0.35)),
+  ];
   const cropped = (
-    await render({ action: "regions", image, regions: [region.box] })
+    await render({ action: "regions", image, regions: [cropBox] })
   ).images[0];
   if (!cropped)
     throw fail(422, "The detected question region could not be cropped.");
@@ -56,24 +70,27 @@ async function recoverRegion(
     cropped,
     [],
     subject,
-    "This is a close view of printed question " +
-      region.sourceNumber +
-      ". Preserve graph-only answer choices as source-image crops.",
+    "This is a close view of one question. Printed number: " +
+      (region.sourceNumber || "unreadable; use null rather than inventing a number") +
+      ". Return exactly the central complete question, ignoring neighboring partial questions included as context. Preserve graph-only answer choices as source-image crops. Include every visible option, especially the bottom-most waveform. Do not cut off axes, labels or lower half-cycles.",
   );
-  const result = found.find((q) => q.sourceNumber === region.sourceNumber);
+  const result = region.sourceNumber
+    ? found.find((q) => q.sourceNumber === region.sourceNumber)
+    : found.length === 1 ? found[0] : null;
   if (!result)
     throw fail(
       422,
       "The close-up did not yield a matching printed question. Review the source; no substitute was added.",
     );
-  result.sourceBox = remap(result.sourceBox, region.box) || region.box;
-  result.diagramBox = remap(result.diagramBox, region.box);
+  result.sourceBox = remap(result.sourceBox, cropBox) || region.box;
+  result.diagramBox = remap(result.diagramBox, cropBox);
   result.options.forEach((o) => {
-    o.imageBox = remap(o.imageBox, region.box);
+    o.imageBox = remap(o.imageBox, cropBox);
   });
-  const index = questions.findIndex(
-    (q) => q.sourceNumber === result.sourceNumber,
-  );
+  const existing = regionQuestion(region, questions);
+  const index = existing ? questions.indexOf(existing) : -1;
+  if (!region.sourceNumber) result.sourceNumber = null;
+  result.sourceComplete = region.complete !== false;
   if (index >= 0) questions[index] = result;
   else questions.push(result);
 }
@@ -155,6 +172,13 @@ export async function digitizePage(current, input, models, render) {
   );
   const { boxes, regions, recovered, recoveryNote } = execution.value;
   let { questions } = execution.value;
+  for (const region of regions.filter((r) => r.complete === false)) {
+    const q = regionQuestion(region, questions);
+    if (q) {
+      q.sourceComplete = false;
+      q.audit = { status: "NEEDS_REVIEW", proof: "The source layout is incomplete: " + String(region.notes || "Part of this question or its choices is obscured.") };
+    }
+  }
   if (current.questions.length + questions.length > 200)
     throw fail(422, "Limit: 200 single-correct questions per paper.");
   questions.sort(
@@ -188,6 +212,7 @@ export async function digitizePage(current, input, models, render) {
             !questions.some((q) => q.sourceNumber === r.sourceNumber),
         )
         .map((r) => r.sourceNumber),
+      missingRegions: regions.filter((r) => !regionQuestion(r, questions)).map((r) => ({ sourceNumber: r.sourceNumber, box: r.box, notes: r.notes })),
       note: recoveryNote,
     },
     questionCount: questions.length,
@@ -313,6 +338,10 @@ export async function auditOne(current, input, models) {
     throw fail(422, "Select one question to verify; bulk audits are disabled.");
   const q = current.questions[index],
     page = current.pages[(q.page || 1) - 1];
+  if (q.sourceComplete === false) {
+    q.audit = { status: "NEEDS_REVIEW", proof: "The uploaded source has obscured or incomplete content. Supply a complete source for this question before independent verification or hosting." };
+    return;
+  }
   if (q.audit.status === "VERIFIED") return;
   const execution = await budget(models, 2, () =>
     models.auditAndRepair(q, page.image),

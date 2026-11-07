@@ -35,4 +35,11 @@ test("/hackathon mount keeps assets, API and cookies out of the core namespace",
   });
   assert.equal(login.status, 200);
   assert.match(login.headers.get("set-cookie"), /Path=\/hackathon\//);
+  const asset = await fetch(base + "/hackathon/workspace.js");
+  assert.equal(asset.status, 200);
+  assert.equal(asset.headers.get("content-encoding"), "gzip");
+  const script = await asset.text();
+  assert.ok(!script.includes('class="allowance"'), "Judge allowance is not shown in the frontend");
+  const unchanged = await fetch(base + "/hackathon/workspace.js", { headers: { "If-None-Match": asset.headers.get("etag") } });
+  assert.equal(unchanged.status, 304);
 });

@@ -170,8 +170,22 @@ test("uploaded content → edits → re-audit → responses/OMR → isolated ser
     422,
     "bulk verification is disabled",
   );
-  for (const q of edited.questions)
-    await request(path + "/audit", { questionId: q.id });
+  assert.equal((await request(path + "/approve", {})).response.status, 422);
+  assert.equal((await request(path)).value.questions[0].audit.status, "NEEDS_REVIEW", "Bulk approval cannot invent an audit");
+  const auditBatch = await request(path + "/jobs", {
+    action: "audit-selection", input: { questionIds: edited.questions.map((q) => q.id) }, requestId: "test-selected-audit",
+  });
+  assert.equal(auditBatch.response.status, 202);
+  const batchDeadline = Date.now() + 5000;
+  let batchJob;
+  do {
+    batchJob = (await request("/jobs/" + auditBatch.value.id)).value;
+    if (!["QUEUED", "RUNNING"].includes(batchJob.status)) break;
+    assert.ok(Date.now() < batchDeadline);
+    await new Promise((r) => setTimeout(r, 10));
+  } while (true);
+  assert.equal(batchJob.status, "SUCCEEDED", JSON.stringify(batchJob.error));
+  assert.ok((await request(path)).value.questions.every((q) => q.audit.status === "VERIFIED"));
   paper = (await request(path)).value;
   assert.equal(paper.questions[0].text, "Edited uploaded content");
   const hosted = (await request(path + "/host", {})).value;
@@ -296,6 +310,31 @@ test("uploaded content → edits → re-audit → responses/OMR → isolated ser
   });
   cookie = second.response.headers.get("set-cookie").split(";")[0];
   assert.equal((await request(path)).response.status, 404);
+  const draft = (await request("/papers", { name: "Unverified test" })).value;
+  const draftPath = "/papers/" + draft.id;
+  const bypass = { skipVerification: true };
+  assert.equal((await request(draftPath + "/host", bypass)).response.status, 422);
+  const extracted = (await request(draftPath + "/pages", {
+    image: "data:image/png;base64,AA==",
+    pageId: "unverified-source",
+    sourcePage: 1,
+  })).value;
+  assert.equal((await request(draftPath + "/host", {})).response.status, 422);
+  const provisionallyHosted = await request(draftPath + "/host", bypass);
+  assert.equal(provisionallyHosted.response.status, 200);
+  assert.deepEqual(provisionallyHosted.value.questions.map((q) => q.audit), extracted.questions.map((q) => q.audit));
+  assert.equal((await request(draftPath + "/publish", bypass)).response.status, 422);
+  const publicPath = "/hosted/" + provisionallyHosted.value.hostToken;
+  const publicDraft = (await request(publicPath, undefined, { Cookie: "" })).value;
+  assert.equal(publicDraft.hostedWithoutVerification, true);
+  assert.ok(!JSON.stringify(publicDraft).includes("correctIndex"));
+  const provisionalAttempt = (await request(publicPath + "/start", {}, { Cookie: "" })).value;
+  const provisionalResult = (await request(publicPath + "/submit", {
+    attemptToken: provisionalAttempt.attemptToken,
+    answers: [0, 1, 0],
+  }, { Cookie: "" })).value;
+  assert.equal(provisionalResult.score, 12);
+  assert.match(provisionalResult.keyLabel, /^Provisional score/);
   assert.equal((await fetch(base + "/vendor/katex/katex.mjs")).status, 200);
   assert.equal((await fetch(base + "/../.env")).status, 404);
 });

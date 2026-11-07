@@ -1,4 +1,6 @@
 let library;
+const previewCache = new WeakMap();
+const renderedCache = new WeakMap();
 async function pdfjs(BASE) {
   if (!library) {
     library = await import(BASE + "/vendor/pdfjs/build/pdf.mjs");
@@ -19,9 +21,9 @@ export async function openPdf(file, BASE) {
     wasmUrl: BASE + "/vendor/pdfjs/wasm/",
   }).promise;
 }
-async function raster(page, width = 160) {
+async function raster(page, width = 160, detail = false) {
   const original = page.getViewport({ scale: 1 });
-  const scale = Math.min(width / original.width, 2400 / original.height);
+  const scale = Math.min(width / original.width, (detail ? 4800 : 2400) / original.height);
   const viewport = page.getViewport({ scale });
   const canvas = document.createElement("canvas");
   canvas.width = Math.ceil(viewport.width);
@@ -31,23 +33,29 @@ async function raster(page, width = 160) {
     viewport,
     background: "white",
   }).promise;
-  const image = canvas.toDataURL("image/jpeg", width > 160 ? 0.9 : 0.8);
+  const image = detail ? canvas.toDataURL("image/png") : canvas.toDataURL("image/jpeg", width > 160 ? 0.9 : 0.8);
   canvas.width = canvas.height = 0;
   return image;
 }
-export async function inspectPdf(document, offset, BASE) {
+export async function inspectPdf(document, offset, BASE, onProgress = () => {}) {
   const { OPS } = await pdfjs(BASE),
     previews = [];
+  let cached = previewCache.get(document);
+  if (!cached) previewCache.set(document, cached = new Map());
   for (
     let index = offset;
     index < Math.min(offset + 24, document.numPages);
     index++
   ) {
+    if (cached.has(index)) {
+      previews.push(cached.get(index));
+      continue;
+    }
     const page = await document.getPage(index + 1);
-    const text = (await page.getTextContent()).items
+    const [content, operators] = await Promise.all([page.getTextContent(), page.getOperatorList()]);
+    const text = content.items
       .map((item) => item.str || "")
       .join(" ");
-    const operators = await page.getOperatorList();
     const imageOps = [
       OPS.paintImageXObject,
       OPS.paintInlineImageXObject,
@@ -63,11 +71,20 @@ export async function inspectPdf(document, offset, BASE) {
       nativeTextLength: text.length,
       hasVisuals,
     });
+    cached.set(index, previews.at(-1));
+    if (previews.length % 4 === 0 || index + 1 === document.numPages) {
+      onProgress(previews.length, Math.min(24, document.numPages - offset));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
     page.cleanup();
   }
   return { pageCount: document.numPages, offset, batchSize: 24, previews };
 }
-export async function renderPdfPage(document, index) {
+export async function renderPdfPage(document, index, detail = false) {
+  let cache = renderedCache.get(document);
+  if (!cache) renderedCache.set(document, cache = new Map());
+  const key = index + ":" + detail;
+  if (cache.has(key)) return cache.get(key);
   const page = await document.getPage(index + 1);
   const nativeText = (await page.getTextContent()).items
     .map((item) => item.str || "")
@@ -76,9 +93,12 @@ export async function renderPdfPage(document, index) {
   const result = {
     sourcePage: index + 1,
     nativeText,
-    image: await raster(page, 1800),
+    image: await raster(page, detail ? 3200 : 1800, detail),
   };
   page.cleanup();
+  // Keep a few detailed pages; browsing a long PDF must not retain all rasters.
+  if (cache.size >= 4) cache.delete(cache.keys().next().value);
+  cache.set(key, result);
   return result;
 }
 export async function imagePreview(file) {

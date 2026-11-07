@@ -7,6 +7,7 @@ const allowed = new Set([
   "pages",
   "recover",
   "audit",
+  "audit-selection",
   "responses",
   "coach",
   "voice",
@@ -21,7 +22,7 @@ export class Jobs {
     this.credentials = new GoogleAuth({
       scopes: ["https://www.googleapis.com/auth/cloud-platform"],
     });
-    if (config.K_SERVICE && !config.TASKS_QUEUE)
+    if (config.K_SERVICE && !config.TASKS_QUEUE && config.REQUIRE_TASKS_QUEUE !== "false")
       throw new Error(
         "Cloud Run requires TASKS_QUEUE for durable inference processing.",
       );

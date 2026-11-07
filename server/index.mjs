@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve, extname, sep } from "node:path";
 import { spawn } from "node:child_process";
+import { gzipSync } from "node:zlib";
 import { createRequire } from "node:module";
 import {
   createHmac,
@@ -12,6 +13,7 @@ import {
   timingSafeEqual,
 } from "node:crypto";
 import { MetaModels } from "./models.mjs";
+import { hasUsableKey } from "../public/hosting.js";
 import { Store } from "./store.mjs";
 import { CloudStore } from "./cloud-store.mjs";
 import {
@@ -152,6 +154,10 @@ export function createApp(config = process.env, dependencies = {}) {
   const models =
     dependencies.models || new MetaModels(config, fetch, allowance);
   const connector = dependencies.connector || new ClarifyCueConnector(config);
+  let modelHealth;
+  let modelHealthExpires = 0;
+  let modelHealthPending;
+  const staticCache = new Map();
   const renderMedia = dependencies.media || ((data) => media(data, config));
   let mediaTail = Promise.resolve();
   // Bound Python memory usage when several judges request exports or previews.
@@ -181,6 +187,7 @@ export function createApp(config = process.env, dependencies = {}) {
           "key",
           "settings",
           "selection",
+          "approve",
         ].includes(action) &&
         (current.hosted || current.publication || current.originalAttempt)
       )
@@ -316,14 +323,20 @@ export function createApp(config = process.env, dependencies = {}) {
             "Choose at least one existing question for the hosted test.",
           );
         current.selectedQuestionIds = ids;
+      } else if (action === "approve") {
+        throw fail(422, "Bulk approval cannot replace an independent check. Select verified questions or audit individual questions before hosting.");
       } else if (action === "analyze") {
         return saveOriginalAttempt(store, current, session.owner, input);
       } else if (action === "host") {
-        if (!canPublish(current))
-          throw fail(
-            422,
-            "All questions need a complete agreeing audit before hosting.",
-          );
+        if (!current.hosted) {
+          const questions = includedQuestions(current);
+          if (!questions.length || !questions.every(hasUsableKey))
+            throw fail(422, "Select questions with answer keys, or add the missing keys in Review questions.");
+          const verified = canPublish(current);
+          if (!verified && input.skipVerification !== true)
+            throw fail(422, "Verify the selected questions or choose Host without verification.");
+          current.hostedWithoutVerification = !verified;
+        }
         current.hosted = true;
         if (!decode(current.hostToken || ""))
           current.hostToken = encode({
@@ -355,6 +368,21 @@ export function createApp(config = process.env, dependencies = {}) {
     const work = async () => {
       const paper = await store.get(job.paperId, job.owner);
       assertScope(paper, job.journey);
+      if (job.action === "audit-selection") {
+        const ids = job.input.questionIds;
+        if (!Array.isArray(ids) || !ids.length || ids.length > 3 || new Set(ids).size !== ids.length || ids.some((id) => !paper.questions.some((q) => q.id === id)))
+          throw fail(422, "A verification job accepts up to three existing questions. Larger selections are processed in successive jobs.");
+        for (let index = 0; index < ids.length; index++) {
+          await store.update(job.id, null, async (j) => {
+            j.stage = `Verifying question ${index + 1} of ${ids.length}`;
+            j.updatedAt = new Date().toISOString();
+          });
+          // Persist each completed audit so a later failure cannot discard it.
+          await store.update(paper.id, job.owner, (current) =>
+            mutatePaper(current, "audit", { questionId: ids[index] }, job.owner, job.id));
+        }
+        return { paperId: paper.id };
+      }
       if (
         ["responses", "coach", "voice"].includes(job.action) &&
         journeyOf(paper) !== "student"
@@ -382,7 +410,7 @@ export function createApp(config = process.env, dependencies = {}) {
     };
     const notify = (model) =>
       store.update(job.id, null, async (j) => {
-        j.stage = "Preparing " + model + " · checking its allowance";
+        j.stage = "Working with " + model;
         j.updatedAt = new Date().toISOString();
       });
     return models.withActor
@@ -640,7 +668,7 @@ export function createApp(config = process.env, dependencies = {}) {
                   elapsedSeconds: Math.round(
                     (Date.now() - attempt.startedAt) / 1000,
                   ),
-                  scopeLabel: `${current.questions.length} questions in this hosted test`,
+                  scopeLabel: `${includedQuestions(current).length} questions in this hosted test`,
                 };
                 current.attempts = [
                   ...(current.attempts || []).slice(-99),
@@ -767,8 +795,17 @@ export function createApp(config = process.env, dependencies = {}) {
               ],
             },
           );
-        if (route === "/api/models" && req.method === "GET")
-          return json(res, 200, await models.health());
+        if (route === "/api/models" && req.method === "GET") {
+          if (!modelHealth || Date.now() >= modelHealthExpires) {
+            modelHealthPending ||= models.health().then((value) => {
+              modelHealth = value;
+              modelHealthExpires = Date.now() + (value.mode === "LIVE_CONNECTED" ? 60000 : 10000);
+              return value;
+            }).finally(() => { modelHealthPending = null; });
+            await modelHealthPending;
+          }
+          return json(res, 200, modelHealth);
+        }
         if (
           ["/api/render-pdf", "/api/inspect-pdf"].includes(route) &&
           req.method === "POST"
@@ -814,7 +851,7 @@ export function createApp(config = process.env, dependencies = {}) {
           return json(res, 201, paper);
         }
         const match = route.match(
-          /^\/api\/papers\/([a-f0-9-]{36})(?:\/(pages|recover|audit|edit|responses|export|showcase|key|settings|analyze|analysis|host|publish|receipt|coach|voice|share-student|retry|jobs|selection))?$/,
+          /^\/api\/papers\/([a-f0-9-]{36})(?:\/(pages|recover|audit|edit|responses|export|showcase|key|settings|analyze|analysis|host|publish|receipt|coach|voice|share-student|retry|jobs|selection|approve))?$/,
         );
         if (!match) throw fail(404, "Endpoint not found.");
         const [, id, action] = match;
@@ -828,6 +865,7 @@ export function createApp(config = process.env, dependencies = {}) {
             "showcase",
             "share-student",
             "selection",
+            "approve",
           ].includes(action) &&
           journeyOf(paper) !== "organization"
         )
@@ -1042,6 +1080,7 @@ export function createApp(config = process.env, dependencies = {}) {
         ".woff": "font/woff",
         ".ttf": "font/ttf",
         ".wasm": "application/wasm",
+        ".pdf": "application/pdf",
       };
       let data;
       try {
@@ -1060,10 +1099,24 @@ export function createApp(config = process.env, dependencies = {}) {
             .replaceAll('href="/', 'href="' + basePath + "/")
             .replaceAll('src="/', 'src="' + basePath + "/"),
         );
-      res.writeHead(200, {
+      const etag = '"' + createHash("sha256").update(data).digest("hex") + '"';
+      const headers = {
         "Content-Type": types[extname(target)] || "application/octet-stream",
-        "Cache-Control": "no-cache",
-      });
+        "Cache-Control": vendor ? "public, max-age=86400" : "no-cache, no-store, must-revalidate",
+        ETag: etag,
+        Vary: "Accept-Encoding",
+      };
+      if (req.headers["if-none-match"] === etag) {
+        res.writeHead(304, headers);
+        return res.end();
+      }
+      if (/\bgzip\b/.test(req.headers["accept-encoding"] || "") && /\.(?:html|css|js|mjs|svg)$/.test(target) && data.length > 1024) {
+        const cached = staticCache.get(target);
+        data = cached?.etag === etag ? cached.data : gzipSync(data);
+        staticCache.set(target, { etag, data });
+        headers["Content-Encoding"] = "gzip";
+      }
+      res.writeHead(200, headers);
       res.end(data);
     } catch (error) {
       json(res, error.status || 500, {

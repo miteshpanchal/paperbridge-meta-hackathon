@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { isVerifiedForHosting } from "../public/hosting.js";
 
 export const fail = (status, message) =>
   Object.assign(new Error(message), { status });
@@ -139,7 +140,9 @@ export function grade(paper, answers) {
     correct: review.filter((q) => q.status === "CORRECT").length,
     incorrect: review.filter((q) => q.status === "INCORRECT").length,
     unattempted: review.filter((q) => q.status === "UNATTEMPTED").length,
-    keyLabel: paper.questions.every((q) => q.keySource === "PROVIDED_KEY")
+    keyLabel: paper.hostedWithoutVerification
+      ? "Provisional score based on the answer key used for this test"
+      : paper.questions.every((q) => q.keySource === "PROVIDED_KEY")
       ? "Scored against your supplied answer key"
       : "Estimated score against AI-derived or edited answers; compare with the official key",
     topics: [...topics.values()].sort((a, b) => b.lostMarks - a.lostMarks),
@@ -156,6 +159,7 @@ export function publicPaper(paper) {
     penalty: paper.penalty,
     durationMins: paper.durationMins,
     mode: paper.mode,
+    hostedWithoutVerification: Boolean(paper.hostedWithoutVerification),
     keyLabel: paper.questions.every((q) => q.keySource === "PROVIDED_KEY")
       ? "Uses a user-supplied answer key"
       : "Uses AI-derived or edited answers; scores are estimates",
@@ -171,12 +175,7 @@ export function publicPaper(paper) {
 
 export function canPublish(paper) {
   const questions = includedQuestions(paper);
-  return (
-    questions.length > 0 &&
-    questions.every(
-      (q) => q.audit.status === "VERIFIED" && Number.isInteger(q.correctIndex),
-    )
-  );
+  return questions.length > 0 && questions.every(isVerifiedForHosting);
 }
 export function includedQuestions(paper) {
   return paper.selectedQuestionIds

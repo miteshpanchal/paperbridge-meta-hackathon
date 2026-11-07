@@ -16,10 +16,31 @@ export async function mountAssessment({ token, retry, BASE, esc, math, img }) {
     report: null,
   };
   let timer;
+  const storageKey = "pb-assessment:" + (retry ? "retry:" : "host:") + token;
+  function saveProgress() {
+    try {
+      sessionStorage.setItem(storageKey, JSON.stringify({
+        attemptToken: s.attemptToken, startedAt: s.startedAt,
+        answers: s.answers, flagged: s.flagged, index: s.index, report: s.report,
+      }));
+    } catch { /* The test still works if browser storage is unavailable. */ }
+  }
+  function startTimer() {
+    clearInterval(timer);
+    timer = setInterval(() => {
+      const clockEl = root.querySelector(".exam-clock");
+      if (clockEl) clockEl.textContent = clock();
+      if (remaining() === 0 && !s.busy) {
+        clearInterval(timer);
+        void submit(true);
+      }
+    }, 1000);
+  }
   async function request(action = "", data) {
     const r = await fetch(endpoint + action, {
       method: data === undefined ? "GET" : "POST",
       credentials: "same-origin",
+      signal: AbortSignal.timeout(30000),
       headers: { "Content-Type": "application/json" },
       body: data === undefined ? undefined : JSON.stringify(data),
     });
@@ -40,7 +61,7 @@ export async function mountAssessment({ token, retry, BASE, esc, math, img }) {
     return `${String(Math.floor(n / 60)).padStart(2, "0")}:${String(n % 60).padStart(2, "0")}`;
   }
   function render() {
-    root.innerHTML = `<div class="assessment"><header class="assessment-header"><a class="brand" href="${BASE}/"><img src="${BASE}/assets/icon.svg" alt="">PaperBridge</a><span class="pill">${retry ? "Separate retry" : "Hosted assessment"}</span>${s.started && !s.report ? `<strong class="exam-clock" aria-label="Time remaining">${clock()}</strong>` : ""}</header><main>${s.error ? `<div role="alert" class="notice error">${esc(s.error)}</div>` : ""}${!s.paper ? '<p class="loading">Opening the assessment…</p>' : s.report ? resultView() : !s.started ? `<section class="card exam-start"><div class="eyebrow muted">${retry ? "Your original attempt stays saved" : "Reviewed paper · Independent test hosting"}</div><h1>${esc(s.paper.name)}</h1><p>${s.paper.questions.length} questions · ${s.paper.durationMins} minutes · +${s.paper.marks} correct / −${s.paper.penalty} wrong / 0 skipped</p><p class="small muted">${esc(s.paper.keyLabel)}. ${retry ? "This timer measures your new attempt only." : "Your selections are graded on the server after submission."}</p><button class="btn" data-exam="start" ${s.busy ? "disabled" : ""}>Start ${retry ? "retry" : "test"} →</button></section>` : examView()}</main></div>`;
+    root.innerHTML = `<div class="assessment"><header class="assessment-header"><a class="brand" href="${BASE}/"><img src="${BASE}/assets/icon.svg" alt="">PaperBridge</a><span class="pill">${retry ? "Separate retry" : "Hosted assessment"}</span>${s.started && !s.report ? `<strong class="exam-clock" aria-label="Time remaining">${clock()}</strong>` : ""}</header><main>${s.error ? `<div role="alert" class="notice error">${esc(s.error)}</div>` : ""}${!s.paper ? '<p class="loading">Opening the assessment…</p>' : s.report ? resultView() : !s.started ? `<section class="card exam-start"><div class="eyebrow muted">${retry ? "Your original attempt stays saved" : s.paper.hostedWithoutVerification ? "Hosted without independent verification" : "Reviewed paper · Independent test hosting"}</div><h1>${esc(s.paper.name)}</h1><p>${s.paper.questions.length} questions · ${s.paper.durationMins} minutes · +${s.paper.marks} correct / −${s.paper.penalty} wrong / 0 skipped</p><p class="small muted">${esc(s.paper.keyLabel)}. ${retry ? "This timer measures your new attempt only." : "Your selections are graded on the server after submission."}</p><button class="btn" data-exam="start" ${s.busy ? "disabled" : ""}>Start ${retry ? "retry" : "test"} →</button></section>` : examView()}</main></div>`;
   }
   function examView() {
     const q = s.paper.questions[s.index];
@@ -66,6 +87,7 @@ export async function mountAssessment({ token, retry, BASE, esc, math, img }) {
         answers: s.answers,
       });
       clearInterval(timer);
+      saveProgress();
     } catch (e) {
       s.error = e.message;
     } finally {
@@ -85,11 +107,8 @@ export async function mountAssessment({ token, retry, BASE, esc, math, img }) {
         const started = await request("/start", {});
         Object.assign(s, started);
         s.started = true;
-        timer = setInterval(() => {
-          const clockEl = root.querySelector(".exam-clock");
-          if (clockEl) clockEl.textContent = clock();
-          if (remaining() === 0) submit(true);
-        }, 1000);
+        saveProgress();
+        startTimer();
       } catch (e) {
         s.error = e.message;
       } finally {
@@ -112,12 +131,26 @@ export async function mountAssessment({ token, retry, BASE, esc, math, img }) {
     if (a === "next") s.index++;
     if (a === "previous") s.index--;
     s.error = "";
+    saveProgress();
     render();
   });
   render();
   try {
     s.paper = await request();
     s.answers = s.paper.questions.map(() => null);
+    let saved;
+    try { saved = JSON.parse(sessionStorage.getItem(storageKey)); } catch {}
+    if (saved?.attemptToken && Number.isFinite(saved.startedAt) &&
+        Array.isArray(saved.answers) && saved.answers.length === s.paper.questions.length) {
+      s.attemptToken = saved.attemptToken;
+      s.startedAt = saved.startedAt;
+      s.answers = saved.answers.map((answer, i) => Number.isInteger(answer) && answer >= 0 && answer < s.paper.questions[i].options.length ? answer : null);
+      s.flagged = Array.isArray(saved.flagged) ? saved.flagged.filter((i) => Number.isInteger(i) && i >= 0 && i < s.paper.questions.length) : [];
+      s.index = Math.max(0, Math.min(Number(saved.index) || 0, s.paper.questions.length - 1));
+      s.started = true;
+      s.report = saved.report || null;
+      if (!s.report) startTimer();
+    }
   } catch (e) {
     s.error = e.message;
   }

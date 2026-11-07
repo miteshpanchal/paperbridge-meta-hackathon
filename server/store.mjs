@@ -39,9 +39,11 @@ export class Store {
         await rename(temp, target);
         break;
       } catch (e) {
-        if (attempt >= 5 || !["EPERM", "EBUSY", "EACCES"].includes(e.code))
+        if (attempt >= 12 || !["EPERM", "EBUSY", "EACCES"].includes(e.code))
           throw e;
-        await new Promise((r) => setTimeout(r, 20 * (attempt + 1)));
+        // Windows scanners and concurrent status reads can briefly prevent
+        // replacement. Keep the atomic rename and retry only the file write.
+        await new Promise((r) => setTimeout(r, Math.min(200, 25 * (attempt + 1)) + Math.random() * 20));
       }
     }
     return record;
